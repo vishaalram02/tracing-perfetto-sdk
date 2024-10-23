@@ -150,7 +150,7 @@ void trace_track_event_slice_begin(uint64_t track_uuid, rust::Str name,
     if (track_uuid) {
       track_event->set_track_uuid(track_uuid);
     }
-    if (name.size()) {
+    if (!name.empty()) {
       track_event->set_name(name.data(), name.size());
     }
     _add_debug_annotations(track_event, debug_annotations);
@@ -177,7 +177,7 @@ void trace_track_event_slice_end(uint64_t track_uuid, rust::Str name,
     if (track_uuid) {
       track_event->set_track_uuid(track_uuid);
     }
-    if (name.size()) {
+    if (!name.empty()) {
       track_event->set_name(name.data(), name.size());
     }
 
@@ -203,7 +203,7 @@ void trace_track_event_instant(uint64_t track_uuid, rust::Str name,
     if (track_uuid) {
       track_event->set_track_uuid(track_uuid);
     }
-    if (name.size()) {
+    if (!name.empty()) {
       track_event->set_name(name.data(), name.size());
     }
     _add_debug_annotations(track_event, debug_annotations);
@@ -231,7 +231,7 @@ void trace_track_descriptor_process(uint64_t parent_uuid, uint64_t track_uuid,
     if (parent_uuid) {
       track_descriptor->set_parent_uuid(parent_uuid);
     }
-    if (process_name.size()) {
+    if (!process_name.empty()) {
       track_descriptor->set_name(process_name.data(), process_name.size());
     }
 
@@ -239,7 +239,7 @@ void trace_track_descriptor_process(uint64_t parent_uuid, uint64_t track_uuid,
     if (process_pid) {
       process->set_pid(process_pid);
     }
-    if (process_name.size()) {
+    if (!process_name.empty()) {
       process->set_process_name(process_name.data(), process_name.size());
     }
   });
@@ -259,7 +259,7 @@ void trace_track_descriptor_thread(uint64_t parent_uuid, uint64_t track_uuid,
     if (parent_uuid) {
       track_descriptor->set_parent_uuid(parent_uuid);
     }
-    if (thread_name.size()) {
+    if (!thread_name.empty()) {
       track_descriptor->set_name(thread_name.data(), thread_name.size());
     }
 
@@ -270,7 +270,7 @@ void trace_track_descriptor_thread(uint64_t parent_uuid, uint64_t track_uuid,
     if (thread_tid) {
       thread->set_tid(thread_tid);
     }
-    if (thread_name.size()) {
+    if (!thread_name.empty()) {
       thread->set_thread_name(thread_name.data(), thread_name.size());
     }
   });
