@@ -63,8 +63,8 @@ void PerfettoTracingSession::stop() noexcept {
 }
 
 void PerfettoTracingSession::flush() noexcept {
-  //  RustTracingDataSource::Flush();
-  // TODO
+  perfetto::TrackEvent::Flush();
+  // RustTracingDataSource::Flush(); // TODO if we find it necessary
 }
 
 void PerfettoTracingSession::poll_traces(rust::Box<PollTracesCtx> ctx,
