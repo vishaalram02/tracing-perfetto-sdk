@@ -104,6 +104,7 @@ impl PerfettoSdkLayer {
     fn ensure_context_known(&self) {
         self.ensure_process_known();
         self.ensure_thread_known();
+        #[cfg(feature = "tokio")]
         self.ensure_tokio_runtime_known();
     }
 
@@ -149,6 +150,7 @@ impl PerfettoSdkLayer {
         }
     }
 
+    #[cfg(feature = "tokio")]
     fn ensure_tokio_runtime_known(&self) {
         let tokio_descriptor_sent = self.inner.tokio_descriptor_sent
             .fetch_or(true, atomic::Ordering::Relaxed);
