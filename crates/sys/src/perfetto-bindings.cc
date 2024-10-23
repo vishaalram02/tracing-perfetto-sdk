@@ -136,21 +136,24 @@ _add_debug_annotations(perfetto::protos::pbzero::TrackEvent *track_event,
   }
 }
 
-void trace_track_event_slice_begin(uint64_t track_uuid, uint32_t sequence_id,
-                                   rust::Str name, rust::Str location_file,
+void trace_track_event_slice_begin(uint64_t track_uuid, rust::Str name,
+                                   rust::Str location_file,
                                    uint32_t location_line,
                                    const DebugAnnotations &debug_annotations) {
-  RustTracingDataSource::Trace([=](RustTracingDataSource::TraceContext ctx) {
+  RustTracingDataSource::Trace([&](RustTracingDataSource::TraceContext ctx) {
     auto packet = ctx.NewTracePacket();
     packet->set_timestamp(perfetto::TrackEvent::GetTraceTimeNs());
-    packet->set_trusted_packet_sequence_id(sequence_id);
 
     auto track_event = packet->set_track_event();
     track_event->set_type(
         perfetto::protos::pbzero::perfetto_pbzero_enum_TrackEvent::
             TYPE_SLICE_BEGIN);
-    track_event->set_track_uuid(track_uuid);
-    track_event->set_name(name.data(), name.size());
+    if (track_uuid) {
+      track_event->set_track_uuid(track_uuid);
+    }
+    if (name.size()) {
+      track_event->set_name(name.data(), name.size());
+    }
     _add_debug_annotations(track_event, debug_annotations);
 
     if (!location_file.empty()) {
@@ -162,19 +165,22 @@ void trace_track_event_slice_begin(uint64_t track_uuid, uint32_t sequence_id,
   });
 }
 
-void trace_track_event_slice_end(uint64_t track_uuid, uint32_t sequence_id,
-                                 rust::Str name, rust::Str location_file,
+void trace_track_event_slice_end(uint64_t track_uuid, rust::Str name,
+                                 rust::Str location_file,
                                  uint32_t location_line) {
-  RustTracingDataSource::Trace([=](RustTracingDataSource::TraceContext ctx) {
+  RustTracingDataSource::Trace([&](RustTracingDataSource::TraceContext ctx) {
     auto packet = ctx.NewTracePacket();
     packet->set_timestamp(perfetto::TrackEvent::GetTraceTimeNs());
-    packet->set_trusted_packet_sequence_id(sequence_id);
 
     auto track_event = packet->set_track_event();
     track_event->set_type(perfetto::protos::pbzero::
                               perfetto_pbzero_enum_TrackEvent::TYPE_SLICE_END);
-    track_event->set_track_uuid(track_uuid);
-    track_event->set_name(name.data(), name.size());
+    if (track_uuid) {
+      track_event->set_track_uuid(track_uuid);
+    }
+    if (name.size()) {
+      track_event->set_name(name.data(), name.size());
+    }
 
     if (!location_file.empty()) {
       auto source_location = track_event->set_source_location();
@@ -185,20 +191,22 @@ void trace_track_event_slice_end(uint64_t track_uuid, uint32_t sequence_id,
   });
 }
 
-void trace_track_event_instant(uint64_t track_uuid, uint32_t sequence_id,
-                               rust::Str name, rust::Str location_file,
-                               uint32_t location_line,
+void trace_track_event_instant(uint64_t track_uuid, rust::Str name,
+                               rust::Str location_file, uint32_t location_line,
                                const DebugAnnotations &debug_annotations) {
-  RustTracingDataSource::Trace([=](RustTracingDataSource::TraceContext ctx) {
+  RustTracingDataSource::Trace([&](RustTracingDataSource::TraceContext ctx) {
     auto packet = ctx.NewTracePacket();
     packet->set_timestamp(perfetto::TrackEvent::GetTraceTimeNs());
-    packet->set_trusted_packet_sequence_id(sequence_id);
 
     auto track_event = packet->set_track_event();
     track_event->set_type(perfetto::protos::pbzero::
                               perfetto_pbzero_enum_TrackEvent::TYPE_INSTANT);
-    track_event->set_track_uuid(track_uuid);
-    track_event->set_name(name.data(), name.size());
+    if (track_uuid) {
+      track_event->set_track_uuid(track_uuid);
+    }
+    if (name.size()) {
+      track_event->set_name(name.data(), name.size());
+    }
     _add_debug_annotations(track_event, debug_annotations);
 
     if (!location_file.empty()) {
@@ -213,36 +221,58 @@ void trace_track_event_instant(uint64_t track_uuid, uint32_t sequence_id,
 void trace_track_descriptor_process(uint64_t parent_uuid, uint64_t track_uuid,
                                     rust::Str process_name,
                                     uint32_t process_pid) {
-  RustTracingDataSource::Trace([=](RustTracingDataSource::TraceContext ctx) {
+  RustTracingDataSource::Trace([&](RustTracingDataSource::TraceContext ctx) {
     auto packet = ctx.NewTracePacket();
     packet->set_timestamp(perfetto::TrackEvent::GetTraceTimeNs());
 
     auto track_descriptor = packet->set_track_descriptor();
-    track_descriptor->set_uuid(track_uuid);
-    track_descriptor->set_parent_uuid(parent_uuid);
-    track_descriptor->set_name(process_name.data(), process_name.size());
+    if (track_uuid) {
+      track_descriptor->set_uuid(track_uuid);
+    }
+    if (parent_uuid) {
+      track_descriptor->set_parent_uuid(parent_uuid);
+    }
+    if (process_name.size()) {
+      track_descriptor->set_name(process_name.data(), process_name.size());
+    }
 
     auto process = track_descriptor->set_process();
-    process->set_pid(process_pid);
-    process->set_process_name(process_name.data(), process_name.size());
+    if (process_pid) {
+      process->set_pid(process_pid);
+    }
+    if (process_name.size()) {
+      process->set_process_name(process_name.data(), process_name.size());
+    }
   });
 }
 
 void trace_track_descriptor_thread(uint64_t parent_uuid, uint64_t track_uuid,
                                    uint32_t process_pid, rust::Str thread_name,
                                    uint32_t thread_tid) {
-  RustTracingDataSource::Trace([=](RustTracingDataSource::TraceContext ctx) {
+  RustTracingDataSource::Trace([&](RustTracingDataSource::TraceContext ctx) {
     auto packet = ctx.NewTracePacket();
     packet->set_timestamp(perfetto::TrackEvent::GetTraceTimeNs());
 
     auto track_descriptor = packet->set_track_descriptor();
-    track_descriptor->set_uuid(track_uuid);
-    track_descriptor->set_parent_uuid(parent_uuid);
-    track_descriptor->set_name(thread_name.data(), thread_name.size());
+    if (track_uuid) {
+      track_descriptor->set_uuid(track_uuid);
+    }
+    if (parent_uuid) {
+      track_descriptor->set_parent_uuid(parent_uuid);
+    }
+    if (thread_name.size()) {
+      track_descriptor->set_name(thread_name.data(), thread_name.size());
+    }
 
     auto thread = track_descriptor->set_thread();
-    thread->set_pid(process_pid);
-    thread->set_tid(thread_tid);
-    thread->set_thread_name(thread_name.data(), thread_name.size());
+    if (process_pid) {
+      thread->set_pid(process_pid);
+    }
+    if (thread_tid) {
+      thread->set_tid(thread_tid);
+    }
+    if (thread_name.size()) {
+      thread->set_thread_name(thread_name.data(), thread_name.size());
+    }
   });
 }

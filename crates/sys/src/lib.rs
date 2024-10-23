@@ -84,7 +84,6 @@ pub mod ffi {
         /// not yet started/enabled.
         fn trace_track_event_slice_begin<'a>(
             track_uuid: u64,
-            sequence_id: u32,
             name: &str,
             location_file: &str,
             location_line: u32,
@@ -101,7 +100,6 @@ pub mod ffi {
         /// not yet started/enabled.
         fn trace_track_event_slice_end<'a>(
             track_uuid: u64,
-            sequence_id: u32,
             name: &str,
             location_file: &str,
             location_line: u32,
@@ -118,7 +116,6 @@ pub mod ffi {
         /// not yet started/enabled.
         fn trace_track_event_instant<'a>(
             track_uuid: u64,
-            sequence_id: u32,
             name: &str,
             location_file: &str,
             location_line: u32,

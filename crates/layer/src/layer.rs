@@ -1,7 +1,8 @@
 //! The main tracing layer and related utils exposed by this crate.
+use std::hash::{Hash, Hasher};
 use std::sync::atomic;
 use std::{env, fs, hash, process, sync, thread};
-use std::hash::{Hash, Hasher};
+
 #[cfg(feature = "tokio")]
 use tokio::task;
 use tracing::span;
@@ -15,11 +16,10 @@ static INIT: sync::Once = sync::Once::new();
 
 // Seeds for consistent hashing of pid/tid/task id
 const TRACK_UUID_NS: u32 = 1;
-const SEQUENCE_ID_NS: u32 = 2;
+
 const PROCESS_NS: u32 = 1;
 const THREAD_NS: u32 = 2;
-#[cfg(feature = "tokio")]
-const TASK_NS: u32 = 3;
+const TOKIO_NS: u32 = 3;
 
 /// A layer to be used with `tracing-subscriber` that forwards collected spans
 /// to the Perfetto SDK.
@@ -33,10 +33,6 @@ pub struct PerfettoSdkLayer {
 #[repr(transparent)]
 struct TrackUuid(u64);
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[repr(transparent)]
-struct SequenceId(u32);
-
 struct ThreadLocalCtx {
     descriptor_sent: atomic::AtomicBool,
 }
@@ -47,6 +43,10 @@ struct Inner {
     output_file: sync::Mutex<Option<fs::File>>,
     process_track_uuid: TrackUuid,
     process_descriptor_sent: atomic::AtomicBool,
+    #[cfg(feature = "tokio")]
+    tokio_descriptor_sent: atomic::AtomicBool,
+    #[cfg(feature = "tokio")]
+    tokio_track_uuid: TrackUuid,
     thread_local_ctxs: thread_local::ThreadLocal<ThreadLocalCtx>,
 }
 
@@ -81,6 +81,10 @@ impl PerfettoSdkLayer {
         let pid = process::id();
         let process_track_uuid = Self::process_track_uuid(pid);
         let process_descriptor_sent = atomic::AtomicBool::new(false);
+        #[cfg(feature = "tokio")]
+        let tokio_descriptor_sent = atomic::AtomicBool::new(false);
+        #[cfg(feature = "tokio")]
+        let tokio_track_uuid = Self::tokio_track_uuid();
         let thread_local_ctxs = thread_local::ThreadLocal::new();
 
         let inner = sync::Arc::new(Inner {
@@ -88,6 +92,10 @@ impl PerfettoSdkLayer {
             output_file,
             process_track_uuid,
             process_descriptor_sent,
+            #[cfg(feature = "tokio")]
+            tokio_descriptor_sent,
+            #[cfg(feature = "tokio")]
+            tokio_track_uuid,
             thread_local_ctxs,
         });
         Ok(Self { inner })
@@ -96,19 +104,22 @@ impl PerfettoSdkLayer {
     fn ensure_context_known(&self) {
         self.ensure_process_known();
         self.ensure_thread_known();
+        self.ensure_tokio_runtime_known();
     }
 
     fn ensure_process_known(&self) {
         let process_descriptor_sent = self
             .inner
             .process_descriptor_sent
-            .fetch_or(true, atomic::Ordering::SeqCst);
+            .fetch_or(true, atomic::Ordering::Relaxed);
 
         if !process_descriptor_sent {
             let process_name = env::current_exe()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned();
+
+            let process_name = process_name.rsplit("/").next().unwrap_or("");
 
             ffi::trace_track_descriptor_process(
                 0,
@@ -120,14 +131,12 @@ impl PerfettoSdkLayer {
     }
 
     fn ensure_thread_known(&self) {
-        let thread_local_ctx = self.inner
-            .thread_local_ctxs
-            .get_or(|| {
-                ThreadLocalCtx {
-                    descriptor_sent: atomic::AtomicBool::new(false),
-                }
-            });
-        let thread_descriptor_sent = thread_local_ctx.descriptor_sent.fetch_or(true, atomic::Ordering::Relaxed);
+        let thread_local_ctx = self.inner.thread_local_ctxs.get_or(|| ThreadLocalCtx {
+            descriptor_sent: atomic::AtomicBool::new(false),
+        });
+        let thread_descriptor_sent = thread_local_ctx
+            .descriptor_sent
+            .fetch_or(true, atomic::Ordering::Relaxed);
         if !thread_descriptor_sent {
             let tid = thread_id::get();
             ffi::trace_track_descriptor_thread(
@@ -140,14 +149,28 @@ impl PerfettoSdkLayer {
         }
     }
 
-    fn trace_context(&self) -> (TrackUuid, SequenceId) {
+    fn ensure_tokio_runtime_known(&self) {
+        let tokio_descriptor_sent = self.inner.tokio_descriptor_sent
+            .fetch_or(true, atomic::Ordering::Relaxed);
+        if !tokio_descriptor_sent {
+            ffi::trace_track_descriptor_thread(
+                self.inner.process_track_uuid.0,
+                self.inner.tokio_track_uuid.0,
+                process::id(),
+                "tokio-runtime",
+                1
+            );
+        }
+    }
+
+    fn pick_trace_track(&self) -> TrackUuid {
         #[cfg(feature = "tokio")]
-        if let Some(task_id) = task::try_id() {
-            return (self.inner.process_track_uuid, Self::task_sequence_id(task_id));
+        if task::try_id().is_some() {
+            return self.inner.tokio_track_uuid;
         }
 
         let tid = thread_id::get();
-        (Self::thread_track_uuid(tid), Self::thread_sequence_id(tid))
+        Self::thread_track_uuid(tid)
     }
 
     pub fn flush(&self) -> error::Result<()> {
@@ -170,17 +193,10 @@ impl PerfettoSdkLayer {
         TrackUuid(h.finish())
     }
 
-    fn thread_sequence_id(tid: usize) -> SequenceId {
+    fn tokio_track_uuid() -> TrackUuid {
         let mut h = hash::DefaultHasher::new();
-        (SEQUENCE_ID_NS, THREAD_NS, tid).hash(&mut h);
-        SequenceId(h.finish() as u32)
-    }
-
-    #[cfg(feature = "tokio")]
-    fn task_sequence_id(tid: task::Id) -> SequenceId {
-        let mut h = hash::DefaultHasher::new();
-        (SEQUENCE_ID_NS, TASK_NS, tid).hash(&mut h);
-        SequenceId(h.finish() as u32)
+        (TRACK_UUID_NS, TOKIO_NS).hash(&mut h);
+        TrackUuid(h.finish())
     }
 }
 
@@ -199,11 +215,10 @@ where
         let mut debug_annotations = debug::DebugAnnotations::default();
         attrs.record(&mut debug_annotations);
 
-        let (track_uuid, sequence_id) = self.trace_context();
+        let track_uuid = self.pick_trace_track();
         let meta = span.metadata();
         ffi::trace_track_event_slice_begin(
             track_uuid.0,
-            sequence_id.0,
             meta.name(),
             meta.file().unwrap_or(""),
             meta.line().unwrap_or(0),
@@ -212,17 +227,15 @@ where
     }
 
     fn on_event(&self, event: &tracing::Event<'_>, _ctx: layer::Context<'_, S>) {
-        self.ensure_process_known();
-        self.ensure_thread_known();
+        self.ensure_context_known();
 
         let mut debug_annotations = debug::DebugAnnotations::default();
         event.record(&mut debug_annotations);
 
         let meta = event.metadata();
-        let (track_uuid, sequence_id) = self.trace_context();
+        let track_uuid = self.pick_trace_track();
         ffi::trace_track_event_instant(
             track_uuid.0,
-            sequence_id.0,
             meta.name(),
             meta.file().unwrap_or(""),
             meta.line().unwrap_or(0),
@@ -236,10 +249,9 @@ where
         };
 
         let meta = span.metadata();
-        let (track_uuid, sequence_id) = self.trace_context();
+        let track_uuid = self.pick_trace_track();
         ffi::trace_track_event_slice_end(
             track_uuid.0,
-            sequence_id.0,
             meta.name(),
             meta.file().unwrap_or(""),
             meta.line().unwrap_or(0),

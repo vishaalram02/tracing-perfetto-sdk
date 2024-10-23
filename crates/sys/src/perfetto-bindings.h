@@ -36,18 +36,17 @@ std::unique_ptr<PerfettoTracingSession>
 new_tracing_session(rust::Slice<const uint8_t> trace_config_bytes,
                     int output_fd);
 
-void trace_track_event_slice_begin(uint64_t track_uuid, uint32_t sequence_id,
-                                   rust::Str name, rust::Str location_file,
+void trace_track_event_slice_begin(uint64_t track_uuid, rust::Str name,
+                                   rust::Str location_file,
                                    uint32_t location_line,
                                    const DebugAnnotations &debug_annotations);
 
-void trace_track_event_slice_end(uint64_t track_uuid, uint32_t sequence_id,
-                                 rust::Str name, rust::Str location_file,
+void trace_track_event_slice_end(uint64_t track_uuid, rust::Str name,
+                                 rust::Str location_file,
                                  uint32_t location_line);
 
-void trace_track_event_instant(uint64_t track_uuid, uint32_t sequence_id,
-                               rust::Str name, rust::Str location_file,
-                               uint32_t location_line,
+void trace_track_event_instant(uint64_t track_uuid, rust::Str name,
+                               rust::Str location_file, uint32_t location_line,
                                const DebugAnnotations &debug_annotations);
 
 void trace_track_descriptor_process(uint64_t parent_uuid, uint64_t track_uuid,
