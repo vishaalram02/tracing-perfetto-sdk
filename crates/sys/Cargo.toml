@@ -1,0 +1,11 @@
+[package]
+name = "tracing-perfetto-sdk-sys"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cxx.workspace = true
+
+[build-dependencies]
+anyhow.workspace = true
+cxx-build.workspace = true

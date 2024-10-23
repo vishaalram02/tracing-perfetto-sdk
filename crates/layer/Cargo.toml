@@ -1,0 +1,25 @@
+[package]
+name = "tracing-perfetto-sdk-layer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bytes.workspace = true
+cxx.workspace = true
+prost.workspace = true
+thiserror.workspace = true
+thread-id.workspace = true
+thread_local.workspace = true
+tokio = { workspace = true, optional = true }
+tracing.workspace = true
+tracing-perfetto-sdk-schema.workspace = true
+tracing-perfetto-sdk-sys.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+serde_yaml.workspace = true
+tokio = { workspace = true, features = ["macros", "time", "rt-multi-thread"] }
+
+[features]
+tokio = ["dep:tokio"]

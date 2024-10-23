@@ -1,0 +1,15 @@
+[package]
+name = "tracing-perfetto-sdk-schema"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pbjson.workspace = true
+pbjson-types.workspace = true
+prost.workspace = true
+serde.workspace = true
+
+[build-dependencies]
+anyhow.workspace = true
+pbjson-build.workspace = true
+prost-build.workspace = true
