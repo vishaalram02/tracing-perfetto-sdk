@@ -69,6 +69,7 @@ data_sources:
 
     time::sleep(time::Duration::from_secs(1)).await;
 
+    perfetto_layer.flush()?;
     perfetto_layer.stop()?;
 
     let trace_data = fs::read(trace_path)?;
