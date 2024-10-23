@@ -46,7 +46,6 @@ struct Inner {
     ffi_session: sync::Mutex<Option<cxx::UniquePtr<ffi::PerfettoTracingSession>>>,
     output_file: sync::Mutex<Option<fs::File>>,
     process_track_uuid: TrackUuid,
-    process_sequence_id: SequenceId,
     process_descriptor_sent: atomic::AtomicBool,
     thread_local_ctxs: thread_local::ThreadLocal<ThreadLocalCtx>,
 }
@@ -81,7 +80,6 @@ impl PerfettoSdkLayer {
 
         let pid = process::id();
         let process_track_uuid = Self::process_track_uuid(pid);
-        let process_sequence_id = Self::process_sequence_id(pid);
         let process_descriptor_sent = atomic::AtomicBool::new(false);
         let thread_local_ctxs = thread_local::ThreadLocal::new();
 
@@ -89,7 +87,6 @@ impl PerfettoSdkLayer {
             ffi_session,
             output_file,
             process_track_uuid,
-            process_sequence_id,
             process_descriptor_sent,
             thread_local_ctxs,
         });
@@ -116,7 +113,6 @@ impl PerfettoSdkLayer {
             ffi::trace_track_descriptor_process(
                 0,
                 self.inner.process_track_uuid.0,
-                self.inner.process_sequence_id.0,
                 &process_name,
                 process::id(),
             );
@@ -137,7 +133,6 @@ impl PerfettoSdkLayer {
             ffi::trace_track_descriptor_thread(
                 self.inner.process_track_uuid.0,
                 Self::thread_track_uuid(tid).0,
-                Self::thread_sequence_id(tid).0,
                 process::id(),
                 thread::current().name().unwrap_or(""),
                 thread_id::get() as u32,
@@ -167,12 +162,6 @@ impl PerfettoSdkLayer {
         let mut h = hash::DefaultHasher::new();
         (TRACK_UUID_NS, PROCESS_NS, pid).hash(&mut h);
         TrackUuid(h.finish())
-    }
-
-    fn process_sequence_id(pid: u32) -> SequenceId {
-        let mut h = hash::DefaultHasher::new();
-        (SEQUENCE_ID_NS, PROCESS_NS, pid).hash(&mut h);
-        SequenceId(h.finish() as u32)
     }
 
     fn thread_track_uuid(tid: usize) -> TrackUuid {

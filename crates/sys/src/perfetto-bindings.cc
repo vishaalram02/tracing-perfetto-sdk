@@ -211,13 +211,11 @@ void trace_track_event_instant(uint64_t track_uuid, uint32_t sequence_id,
 }
 
 void trace_track_descriptor_process(uint64_t parent_uuid, uint64_t track_uuid,
-                                    uint32_t sequence_id,
                                     rust::Str process_name,
                                     uint32_t process_pid) {
   RustTracingDataSource::Trace([=](RustTracingDataSource::TraceContext ctx) {
     auto packet = ctx.NewTracePacket();
     packet->set_timestamp(perfetto::TrackEvent::GetTraceTimeNs());
-    packet->set_trusted_packet_sequence_id(sequence_id);
 
     auto track_descriptor = packet->set_track_descriptor();
     track_descriptor->set_uuid(track_uuid);
@@ -231,12 +229,11 @@ void trace_track_descriptor_process(uint64_t parent_uuid, uint64_t track_uuid,
 }
 
 void trace_track_descriptor_thread(uint64_t parent_uuid, uint64_t track_uuid,
-                                   uint32_t sequence_id, uint32_t process_pid,
-                                   rust::Str thread_name, uint32_t thread_tid) {
+                                   uint32_t process_pid, rust::Str thread_name,
+                                   uint32_t thread_tid) {
   RustTracingDataSource::Trace([=](RustTracingDataSource::TraceContext ctx) {
     auto packet = ctx.NewTracePacket();
     packet->set_timestamp(perfetto::TrackEvent::GetTraceTimeNs());
-    packet->set_trusted_packet_sequence_id(sequence_id);
 
     auto track_descriptor = packet->set_track_descriptor();
     track_descriptor->set_uuid(track_uuid);

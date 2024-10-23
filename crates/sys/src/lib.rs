@@ -136,7 +136,6 @@ pub mod ffi {
         fn trace_track_descriptor_process<'a>(
             parent_uuid: u64,
             track_uuid: u64,
-            sequence_id: u32,
             process_name: &str,
             process_pid: u32,
         );
@@ -152,7 +151,6 @@ pub mod ffi {
         fn trace_track_descriptor_thread<'a>(
             parent_uuid: u64,
             track_uuid: u64,
-            sequence_id: u32,
             process_pid: u32,
             thread_name: &str,
             thread_tid: u32,
