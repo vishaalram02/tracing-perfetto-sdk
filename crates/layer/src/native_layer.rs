@@ -183,7 +183,7 @@ where
             .fetch_or(true, atomic::Ordering::Relaxed);
         if !thread_descriptor_sent {
             let thread_id = thread_id::get();
-            let thread_name = thread::current().name().unwrap_or("").to_owned();
+            let thread_name = thread::current().name().map(|s| s.to_owned());
             let packet = schema::TracePacket {
                 data: Some(trace_packet::Data::TrackDescriptor(
                     schema::TrackDescriptor {
@@ -192,11 +192,11 @@ where
                         thread: Some(schema::ThreadDescriptor {
                             pid: Some(process::id() as i32),
                             tid: Some(thread_id as i32),
-                            thread_name: Some(thread_name.clone()),
+                            thread_name: thread_name.clone(),
                             ..Default::default()
                         }),
                         static_or_dynamic_name: Some(track_descriptor::StaticOrDynamicName::Name(
-                            thread_name,
+                            thread_name.unwrap_or_else(|| format!("(unnamed thread {thread_id})")),
                         )),
                         ..Default::default()
                     },
