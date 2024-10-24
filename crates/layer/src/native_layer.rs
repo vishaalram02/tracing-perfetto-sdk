@@ -183,7 +183,10 @@ where
             .fetch_or(true, atomic::Ordering::Relaxed);
         if !thread_descriptor_sent {
             let thread_id = thread_id::get();
-            let thread_name = thread::current().name().map(|s| s.to_owned()).unwrap_or_else(|| format!("(unnamed thread {thread_id})"));
+            let thread_name = thread::current()
+                .name()
+                .map(|s| s.to_owned())
+                .unwrap_or_else(|| format!("(unnamed thread {thread_id})"));
             let packet = schema::TracePacket {
                 data: Some(trace_packet::Data::TrackDescriptor(
                     schema::TrackDescriptor {
@@ -196,7 +199,7 @@ where
                             ..Default::default()
                         }),
                         static_or_dynamic_name: Some(track_descriptor::StaticOrDynamicName::Name(
-                            thread_name.unwrap_or_else(|| format!("(unnamed thread {thread_id})")),
+                            thread_name,
                         )),
                         ..Default::default()
                     },
