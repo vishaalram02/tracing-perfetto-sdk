@@ -222,7 +222,7 @@ where
         use prost::Message as _;
 
         let mut writer = self.inner.writer.make_writer_for(meta);
-        let _ = writer.write_all(&packet.encode_to_vec());
+        let _ = writer.write_all(&packet.encode_length_delimited_to_vec());
     }
 }
 
