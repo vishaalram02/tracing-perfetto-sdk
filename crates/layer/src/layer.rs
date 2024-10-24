@@ -19,6 +19,7 @@ const TRACK_UUID_NS: u32 = 1;
 
 const PROCESS_NS: u32 = 1;
 const THREAD_NS: u32 = 2;
+#[cfg(feature = "tokio")]
 const TOKIO_NS: u32 = 3;
 
 /// A layer to be used with `tracing-subscriber` that forwards collected spans
@@ -152,7 +153,9 @@ impl PerfettoSdkLayer {
 
     #[cfg(feature = "tokio")]
     fn ensure_tokio_runtime_known(&self) {
-        let tokio_descriptor_sent = self.inner.tokio_descriptor_sent
+        let tokio_descriptor_sent = self
+            .inner
+            .tokio_descriptor_sent
             .fetch_or(true, atomic::Ordering::Relaxed);
         if !tokio_descriptor_sent {
             ffi::trace_track_descriptor_thread(
@@ -160,7 +163,7 @@ impl PerfettoSdkLayer {
                 self.inner.tokio_track_uuid.0,
                 process::id(),
                 "tokio-runtime",
-                1
+                1,
             );
         }
     }
@@ -195,6 +198,7 @@ impl PerfettoSdkLayer {
         TrackUuid(h.finish())
     }
 
+    #[cfg(feature = "tokio")]
     fn tokio_track_uuid() -> TrackUuid {
         let mut h = hash::DefaultHasher::new();
         (TRACK_UUID_NS, TOKIO_NS).hash(&mut h);
