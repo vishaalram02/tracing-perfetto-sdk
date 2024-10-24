@@ -137,6 +137,9 @@ impl SdkLayer {
 
     #[cfg(feature = "tokio")]
     fn ensure_tokio_runtime_known(&self) {
+        // Bogus thread ID; this is unlikely to ever be an actually real thread ID.
+        const TOKIO_THREAD_ID: u32 = (i32::MAX - 1) as u32;
+
         let tokio_descriptor_sent = self
             .inner
             .tokio_descriptor_sent
@@ -147,7 +150,7 @@ impl SdkLayer {
                 self.inner.tokio_track_uuid.as_raw(),
                 process::id(),
                 "tokio-runtime",
-                1,
+                TOKIO_THREAD_ID,
             );
         }
     }
