@@ -1,3 +1,4 @@
+#![cfg(feature = "tokio")]
 use std::{env, fs};
 
 use schema::trace_packet;
