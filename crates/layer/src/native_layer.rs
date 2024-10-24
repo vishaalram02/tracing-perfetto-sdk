@@ -5,7 +5,7 @@ use std::{env, process, sync, thread, time};
 use prost::encoding;
 #[cfg(feature = "tokio")]
 use tokio::task;
-use tracing::{span};
+use tracing::span;
 use tracing_perfetto_sdk_schema as schema;
 use tracing_perfetto_sdk_schema::{trace_packet, track_descriptor, track_event};
 use tracing_perfetto_sdk_sys as sys;
@@ -30,7 +30,7 @@ struct ThreadLocalCtx {
 struct Inner<W> {
     // Mutex is held during start and stop, and by the background thread polling for events
     ffi_session: sync::Arc<sync::Mutex<Option<cxx::UniquePtr<ffi::PerfettoTracingSession>>>>,
-    writer: W,
+    writer: sync::Arc<W>,
     process_track_uuid: ids::TrackUuid,
     process_descriptor_sent: atomic::AtomicBool,
     #[cfg(feature = "tokio")]
@@ -40,7 +40,10 @@ struct Inner<W> {
     thread_local_ctxs: thread_local::ThreadLocal<ThreadLocalCtx>,
 }
 
-impl<W> NativeLayer<W> {
+impl<W> NativeLayer<W>
+where
+    W: for<'w> fmt::MakeWriter<'w> + Send + Sync + 'static,
+{
     pub fn from_config(config: schema::TraceConfig, writer: W) -> error::Result<Self> {
         use prost::Message as _;
         Self::from_config_bytes(&config.encode_to_vec(), writer)
@@ -57,22 +60,31 @@ impl<W> NativeLayer<W> {
         ffi_session.pin_mut().start();
         let ffi_session = sync::Arc::new(sync::Mutex::new(Some(ffi_session)));
 
+        let writer = sync::Arc::new(writer);
+
         let thread_ffi_session = sync::Arc::clone(&ffi_session);
-        thread::spawn(move || {
-            loop {
-                match poll_traces_once(thread_ffi_session.clone()) {
-                    Ok(Some(_)) => {
-                        // TODO: do something with the data
+        let thread_writer = sync::Arc::clone(&writer);
+        thread::Builder::new()
+            .name("tracing-perfetto-poller".to_owned())
+            .spawn(move || {
+                use std::io::Write as _;
+                loop {
+                    match poll_traces_once(thread_ffi_session.clone()) {
+                        Ok(Some(data)) => {
+                            let _ = thread_writer.make_writer().write_all(&*data.data);
+                        }
+                        Ok(None) => break,
+                        Err(error) => {
+                            tracing::warn!(
+                                ?error,
+                                "Perfetto SDK background thread died due to error"
+                            );
+                            break;
+                        }
                     }
-                    Ok(None) => break,
-                    Err(error) => {
-                        tracing::warn!(?error, "Perfetto SDK background thread died due to error");
-                        break;
-                    }
+                    thread::sleep(time::Duration::from_millis(100));
                 }
-                thread::sleep(time::Duration::from_millis(100));
-            }
-        });
+            })?;
 
         let pid = process::id();
         let process_track_uuid = ids::TrackUuid::for_process(pid);
@@ -123,11 +135,7 @@ impl<W> NativeLayer<W> {
     pub fn stop(&self) -> error::Result<()> {
         self.inner.stop()
     }
-}
-impl<W> NativeLayer<W>
-where
-    W: for<'w> fmt::MakeWriter<'w> + 'static,
-{
+
     fn ensure_context_known(&self, meta: &tracing::Metadata) {
         self.ensure_process_known(meta);
         self.ensure_thread_known(meta);
@@ -270,7 +278,13 @@ where
         let _ = self.inner.writer.make_writer_for(meta).write_all(&buf);
     }
 
-    fn slice_begin(&self, meta: &tracing::Metadata, track_uuid: ids::TrackUuid, sequence_id: ids::SequenceId, debug_annotations: debug_annotations::ProtoDebugAnnotations) {
+    fn slice_begin(
+        &self,
+        meta: &tracing::Metadata,
+        track_uuid: ids::TrackUuid,
+        sequence_id: ids::SequenceId,
+        debug_annotations: debug_annotations::ProtoDebugAnnotations,
+    ) {
         let packet = schema::TracePacket {
             timestamp: Some(ffi::trace_time_ns()),
             optional_trusted_packet_sequence_id: Some(
@@ -331,7 +345,7 @@ impl<S, W> tracing_subscriber::Layer<S> for NativeLayer<W>
 where
     S: tracing::Subscriber,
     S: for<'a> registry::LookupSpan<'a>,
-    W: for<'w> fmt::MakeWriter<'w> + 'static,
+    W: for<'w> fmt::MakeWriter<'w> + Send + Sync + 'static,
 {
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: layer::Context<'_, S>) {
         let span = ctx.span(id).expect("span to be found (this is a bug)");
