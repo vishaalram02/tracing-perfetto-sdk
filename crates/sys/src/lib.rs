@@ -101,7 +101,7 @@ pub mod ffi {
         ///
         /// This call is very cheap and will be a no-op if trace collection is
         /// not yet started/enabled.
-        fn trace_track_event_slice_end<'a>(
+        fn trace_track_event_slice_end(
             track_uuid: u64,
             name: &str,
             location_file: &str,
@@ -133,7 +133,7 @@ pub mod ffi {
         ///
         /// This call is very cheap and will be a no-op if trace collection is
         /// not yet started/enabled.
-        fn trace_track_descriptor_process<'a>(
+        fn trace_track_descriptor_process(
             parent_uuid: u64,
             track_uuid: u64,
             process_name: &str,
@@ -148,7 +148,7 @@ pub mod ffi {
         ///
         /// This call is very cheap and will be a no-op if trace collection is
         /// not yet started/enabled.
-        fn trace_track_descriptor_thread<'a>(
+        fn trace_track_descriptor_thread(
             parent_uuid: u64,
             track_uuid: u64,
             process_pid: u32,
@@ -227,6 +227,7 @@ impl PollTracesCtx {
         (Self { tx }, rx)
     }
 
+    #[allow(clippy::boxed_local)]
     pub fn callback(self: Box<Self>, data: &[u8], has_more: bool) {
         let data = bytes::BytesMut::from(data);
         let _ = self.tx.send(PolledTraces { data, has_more });

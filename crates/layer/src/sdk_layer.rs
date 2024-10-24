@@ -110,7 +110,7 @@ impl SdkLayer {
             ffi::trace_track_descriptor_process(
                 0,
                 self.inner.process_track_uuid.as_raw(),
-                &process_name,
+                process_name,
                 process::id(),
             );
         }

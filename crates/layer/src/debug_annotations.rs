@@ -45,7 +45,7 @@ impl field::Visit for FFIDebugAnnotations {
     }
 
     fn record_u64(&mut self, field: &field::Field, value: u64) {
-        if let Some(v) = i64::try_from(value).ok() {
+        if let Ok(v) = i64::try_from(value) {
             self.ints.push(ffi::DebugIntAnnotation {
                 key: field.name(),
                 value: v,
@@ -129,7 +129,7 @@ impl field::Visit for ProtoDebugAnnotations {
     }
 
     fn record_u64(&mut self, field: &field::Field, value: u64) {
-        if let Some(v) = i64::try_from(value).ok() {
+        if let Ok(v) = i64::try_from(value) {
             self.annotations.push(schema::DebugAnnotation {
                 name_field: Self::name_field(field),
                 value: Some(debug_annotation::Value::IntValue(v)),
