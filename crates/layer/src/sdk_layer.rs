@@ -176,13 +176,37 @@ where
     S: for<'a> registry::LookupSpan<'a>,
 {
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: layer::Context<'_, S>) {
-        let Some(span) = ctx.span(id) else {
-            return;
-        };
+        let span = ctx.span(id).expect("span to be found (this is a bug)");
+
+        let track_uuid = self.pick_trace_track();
+        let meta = span.metadata();
 
         let mut debug_annotations = debug_annotations::FFIDebugAnnotations::default();
         attrs.record(&mut debug_annotations);
-        span.extensions_mut().insert(debug_annotations);
+
+        self.ensure_context_known();
+        ffi::trace_track_event_slice_begin(
+            track_uuid.as_raw(),
+            meta.name(),
+            meta.file().unwrap_or(""),
+            meta.line().unwrap_or(0),
+            &debug_annotations.as_ffi(),
+        );
+    }
+
+    fn on_record(&self, id: &tracing::Id, values: &span::Record<'_>, ctx: layer::Context<'_, S>) {
+        let span = ctx.span(id).expect("span to be found (this is a bug)");
+
+        let mut extensions = span.extensions_mut();
+        if let Some(debug_annotations) =
+            extensions.get_mut::<debug_annotations::FFIDebugAnnotations>()
+        {
+            values.record(debug_annotations);
+        } else {
+            let mut debug_annotations = debug_annotations::FFIDebugAnnotations::default();
+            values.record(&mut debug_annotations);
+            extensions.insert(debug_annotations);
+        }
     }
 
     fn on_event(&self, event: &tracing::Event<'_>, _ctx: layer::Context<'_, S>) {
@@ -202,32 +226,8 @@ where
         );
     }
 
-    fn on_enter(&self, id: &span::Id, ctx: layer::Context<'_, S>) {
-        let Some(span) = ctx.span(id) else {
-            return;
-        };
-
-        let track_uuid = self.pick_trace_track();
-        let meta = span.metadata();
-
-        self.ensure_context_known();
-        ffi::trace_track_event_slice_begin(
-            track_uuid.as_raw(),
-            meta.name(),
-            meta.file().unwrap_or(""),
-            meta.line().unwrap_or(0),
-            &span
-                .extensions_mut()
-                .get_mut()
-                .unwrap_or(&mut debug_annotations::FFIDebugAnnotations::default())
-                .as_ffi(),
-        );
-    }
-
     fn on_close(&self, id: tracing::Id, ctx: layer::Context<'_, S>) {
-        let Some(span) = ctx.span(&id) else {
-            return;
-        };
+        let span = ctx.span(&id).expect("span to be found (this is a bug)");
 
         let meta = span.metadata();
         let track_uuid = self.pick_trace_track();

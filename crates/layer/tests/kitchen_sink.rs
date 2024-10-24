@@ -1,5 +1,5 @@
 #![cfg(feature = "tokio")]
-use std::{env, fs};
+use std::{env, fs, thread};
 
 use schema::trace_packet;
 use tokio::{runtime, time};
@@ -65,19 +65,20 @@ data_sources:
     sync_fn(1);
     sync_fn(2);
     let handle = runtime::Handle::current();
-    let t = std::thread::spawn(move || {
+    let t = thread::spawn(move || {
         handle.spawn(async_fn());
     });
     t.join().unwrap();
 
-    _ = tokio::spawn(async_fn()).await;
+    _ = async_fn().await;
 
     time::sleep(time::Duration::from_secs(1)).await;
 
     drop(enter);
     perfetto_layer.flush()?;
-    perfetto_layer.stop()?;
+    drop(demo_span);
     drop(guard);
+    perfetto_layer.stop()?;
 
     let trace_data = fs::read(trace_path)?;
     let trace = schema::Trace::decode(&*trace_data)?;
@@ -144,22 +145,30 @@ fn as_track_descriptor(packet: &schema::TracePacket) -> Option<&schema::TrackDes
 
 #[tracing::instrument]
 fn sync_fn(i: i32) {
+    thread::sleep(time::Duration::from_millis(100));
     info!("inside function");
+    thread::sleep(time::Duration::from_millis(100));
     sync_inner(i + 1);
+    thread::sleep(time::Duration::from_millis(100));
 }
 
 #[tracing::instrument(skip_all, level = "trace")]
 fn sync_inner(x: i32) {
+    thread::sleep(time::Duration::from_millis(100));
     info!(x, "inner");
+    thread::sleep(time::Duration::from_millis(100));
 }
 
 #[tracing::instrument]
 async fn async_fn() {
+    time::sleep(time::Duration::from_millis(100)).await;
     info!(perfetto = true, "test");
+    time::sleep(time::Duration::from_millis(100)).await;
     async_inner().await;
+    time::sleep(time::Duration::from_millis(100)).await;
 }
 
 #[tracing::instrument]
 async fn async_inner() {
-    time::sleep(time::Duration::from_secs(1)).await;
+    time::sleep(time::Duration::from_millis(100)).await;
 }

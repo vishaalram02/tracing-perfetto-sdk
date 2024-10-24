@@ -1,6 +1,6 @@
 //! The main tracing layer and related utils exposed by this crate.
 use std::sync::atomic;
-use std::{env, process, sync, thread};
+use std::{env, process, sync, thread, time};
 
 use prost::encoding;
 #[cfg(feature = "tokio")]
@@ -8,6 +8,7 @@ use tokio::task;
 use tracing::span;
 use tracing_perfetto_sdk_schema as schema;
 use tracing_perfetto_sdk_schema::{trace_packet, track_descriptor, track_event};
+use tracing_perfetto_sdk_sys as sys;
 use tracing_perfetto_sdk_sys::ffi;
 use tracing_subscriber::{fmt, layer, registry};
 
@@ -27,8 +28,8 @@ struct ThreadLocalCtx {
 }
 
 struct Inner<W> {
-    // Mutex is only held during start and stop, never otherwise
-    ffi_session: sync::Mutex<Option<cxx::UniquePtr<ffi::PerfettoTracingSession>>>,
+    // Mutex is held during start and stop, and by the background thread polling for events
+    ffi_session: sync::Arc<sync::Mutex<Option<cxx::UniquePtr<ffi::PerfettoTracingSession>>>>,
     writer: W,
     process_track_uuid: ids::TrackUuid,
     process_descriptor_sent: atomic::AtomicBool,
@@ -54,7 +55,24 @@ impl<W> NativeLayer<W> {
         // and C++ worlds
         let mut ffi_session = ffi::new_tracing_session(config_bytes, -1)?;
         ffi_session.pin_mut().start();
-        let ffi_session = sync::Mutex::new(Some(ffi_session));
+        let ffi_session = sync::Arc::new(sync::Mutex::new(Some(ffi_session)));
+
+        let thread_ffi_session = sync::Arc::clone(&ffi_session);
+        thread::spawn(move || {
+            loop {
+                match poll_traces_once(thread_ffi_session.clone()) {
+                    Ok(Some(_)) => {
+                        // TODO: do something with the data
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        tracing::warn!(?error, "Perfetto SDK background thread died due to error");
+                        break;
+                    }
+                }
+                thread::sleep(time::Duration::from_millis(100));
+            }
+        });
 
         let pid = process::id();
         let process_track_uuid = ids::TrackUuid::for_process(pid);
@@ -186,8 +204,8 @@ where
 
     #[cfg(feature = "tokio")]
     fn ensure_tokio_runtime_known(&self, meta: &tracing::Metadata) {
-        // Bogus thread ID; this is unlikely to ever be an actually real thread ID
-        const TOKIO_THREAD_ID: usize = usize::MAX;
+        // Bogus thread ID; this is unlikely to ever be an actually real thread ID.
+        const TOKIO_THREAD_ID: usize = (i32::MAX - 1) as usize;
 
         let tokio_descriptor_sent = self
             .inner
@@ -198,7 +216,7 @@ where
                 data: Some(trace_packet::Data::TrackDescriptor(
                     schema::TrackDescriptor {
                         parent_uuid: Some(self.inner.process_track_uuid.as_raw()),
-                        uuid: Some(ids::TrackUuid::for_thread(TOKIO_THREAD_ID).as_raw()),
+                        uuid: Some(self.inner.tokio_track_uuid.as_raw()),
                         thread: Some(schema::ThreadDescriptor {
                             pid: Some(process::id() as i32),
                             tid: Some(TOKIO_THREAD_ID as i32),
@@ -252,13 +270,50 @@ where
     W: for<'w> fmt::MakeWriter<'w> + 'static,
 {
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: layer::Context<'_, S>) {
-        let Some(span) = ctx.span(id) else {
-            return;
-        };
+        let span = ctx.span(id).expect("span to be found (this is a bug)");
+
+        let (track_uuid, sequence_id) = self.pick_trace_track_sequence();
+        span.extensions_mut().replace(sequence_id);
+        let meta = span.metadata();
 
         let mut debug_annotations = debug_annotations::ProtoDebugAnnotations::default();
         attrs.record(&mut debug_annotations);
-        span.extensions_mut().insert(debug_annotations);
+
+        let packet = schema::TracePacket {
+            timestamp: Some(ffi::trace_time_ns()),
+            optional_trusted_packet_sequence_id: Some(
+                trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
+                    sequence_id.as_raw(),
+                ),
+            ),
+            data: Some(trace_packet::Data::TrackEvent(schema::TrackEvent {
+                r#type: Some(track_event::Type::SliceBegin as i32),
+                track_uuid: Some(track_uuid.as_raw()),
+                name_field: Some(track_event::NameField::Name(meta.name().to_owned())),
+                debug_annotations: debug_annotations.into_proto(),
+                source_location_field: source_location_field(meta),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
+        self.ensure_context_known(meta);
+        self.write_packet(meta, packet);
+    }
+
+    fn on_record(&self, id: &tracing::Id, values: &span::Record<'_>, ctx: layer::Context<'_, S>) {
+        let span = ctx.span(id).expect("span to be found (this is a bug)");
+
+        let mut extensions = span.extensions_mut();
+        if let Some(debug_annotations) =
+            extensions.get_mut::<debug_annotations::ProtoDebugAnnotations>()
+        {
+            values.record(debug_annotations);
+        } else {
+            let mut debug_annotations = debug_annotations::ProtoDebugAnnotations::default();
+            values.record(&mut debug_annotations);
+            extensions.insert(debug_annotations);
+        }
     }
 
     fn on_event(&self, event: &tracing::Event<'_>, _ctx: layer::Context<'_, S>) {
@@ -266,7 +321,6 @@ where
         event.record(&mut debug_annotations);
 
         let meta = event.metadata();
-        self.ensure_context_known(meta);
         let (track_uuid, sequence_id) = self.pick_trace_track_sequence();
 
         let packet = schema::TracePacket {
@@ -286,51 +340,19 @@ where
             })),
             ..Default::default()
         };
-        self.write_packet(meta, packet);
-    }
-
-    fn on_enter(&self, id: &span::Id, ctx: layer::Context<'_, S>) {
-        let Some(span) = ctx.span(id) else {
-            return;
-        };
-
-        let (track_uuid, sequence_id) = self.pick_trace_track_sequence();
-        let meta = span.metadata();
-
-        let packet = schema::TracePacket {
-            timestamp: Some(ffi::trace_time_ns()),
-            optional_trusted_packet_sequence_id: Some(
-                trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
-                    sequence_id.as_raw(),
-                ),
-            ),
-            data: Some(trace_packet::Data::TrackEvent(schema::TrackEvent {
-                r#type: Some(track_event::Type::SliceBegin as i32),
-                track_uuid: Some(track_uuid.as_raw()),
-                name_field: Some(track_event::NameField::Name(meta.name().to_owned())),
-                debug_annotations: span
-                    .extensions()
-                    .get()
-                    .cloned()
-                    .map(debug_annotations::ProtoDebugAnnotations::into_proto)
-                    .unwrap_or(Vec::new()),
-                source_location_field: source_location_field(meta),
-                ..Default::default()
-            })),
-            ..Default::default()
-        };
 
         self.ensure_context_known(meta);
         self.write_packet(meta, packet);
     }
 
     fn on_close(&self, id: tracing::Id, ctx: layer::Context<'_, S>) {
-        let Some(span) = ctx.span(&id) else {
-            return;
-        };
+        let span = ctx.span(&id).expect("span to be found (this is a bug)");
 
         let meta = span.metadata();
         let (track_uuid, sequence_id) = self.pick_trace_track_sequence();
+        let extensions = span.extensions();
+        let entered_sequence_id = extensions.get::<ids::SequenceId>();
+        let sequence_id = entered_sequence_id.unwrap_or(&sequence_id);
 
         let packet = schema::TracePacket {
             timestamp: Some(ffi::trace_time_ns()),
@@ -349,6 +371,7 @@ where
             ..Default::default()
         };
 
+        self.ensure_context_known(meta);
         self.write_packet(meta, packet);
     }
 }
@@ -393,4 +416,20 @@ fn source_location_field(meta: &tracing::Metadata) -> Option<track_event::Source
             ..Default::default()
         },
     ))
+}
+
+fn poll_traces_once(
+    ffi_session: sync::Arc<sync::Mutex<Option<cxx::UniquePtr<ffi::PerfettoTracingSession>>>>,
+) -> error::Result<Option<sys::PolledTraces>> {
+    let mut mutex_guard = ffi_session
+        .lock()
+        .map_err(|_| error::Error::PoisonedMutex)?;
+    let Some(session) = mutex_guard.as_mut() else {
+        return Ok(None);
+    };
+    let (ctx, rx) = sys::PollTracesCtx::new();
+    session
+        .pin_mut()
+        .poll_traces(Box::new(ctx), sys::PollTracesCtx::callback);
+    Ok(rx.recv().ok())
 }

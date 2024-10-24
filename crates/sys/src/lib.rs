@@ -5,6 +5,9 @@
 //! via the `tracing-perfetto-sdk-layer` crate.
 #![deny(clippy::all)]
 
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
+
 /// FFI bridge: Definitions of functions and types that are shared across the
 /// C++ boundary.
 #[cxx::bridge]
@@ -192,4 +195,40 @@ unsafe impl Sync for ffi::PerfettoTracingSession {}
 
 /// A context that will be passed-in in a call to [`ffi::poll_traces`] and later
 /// passed back in the `done` callback when the async operation has completed.
-pub struct PollTracesCtx {}
+// TODO: here we use synchronous channels, but maybe we can support async as
+// well?
+pub struct PollTracesCtx {
+    tx: mpsc::Sender<PolledTraces>,
+}
+
+/// Traces returned from `poll_traces`/the channel returned by
+/// `PollTracesCtx::new`.
+pub struct PolledTraces {
+    pub data: bytes::BytesMut,
+    pub has_more: bool,
+}
+
+/// A context to be passed into `poll_traces`.
+///
+/// Intended to be called like:
+///
+/// ```no_run
+/// # use std::pin::Pin;
+/// # use tracing_perfetto_sdk_sys::ffi::PerfettoTracingSession;
+/// # use tracing_perfetto_sdk_sys::{PollTracesCtx, PolledTraces};
+/// let session: Pin<&mut PerfettoTracingSession> = todo!();
+/// let (ctx, rx) = PollTracesCtx::new();
+/// session.poll_traces(Box::new(ctx), PollTracesCtx::callback);
+/// let polled_traces: PolledTraces = rx.recv().unwrap(); // Should return polled traces
+/// ```
+impl PollTracesCtx {
+    pub fn new() -> (Self, Receiver<PolledTraces>) {
+        let (tx, rx) = mpsc::channel();
+        (Self { tx }, rx)
+    }
+
+    pub fn callback(self: Box<Self>, data: &[u8], has_more: bool) {
+        let data = bytes::BytesMut::from(data);
+        let _ = self.tx.send(PolledTraces { data, has_more });
+    }
+}

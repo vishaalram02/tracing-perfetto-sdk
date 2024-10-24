@@ -849,6 +849,7 @@ name = "tracing-perfetto-sdk-sys"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "cxx",
  "cxx-build",
 ]
