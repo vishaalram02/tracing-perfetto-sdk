@@ -43,7 +43,7 @@ data_sources:
         stat_counters: [STAT_CPU_TIMES, STAT_FORK_COUNT]
 "#,
     )?;
-    let perfetto_layer = layer::PerfettoSdkLayer::from_config(config, Some(file))?;
+    let perfetto_layer = layer::SdkLayer::from_config(config, Some(file))?;
 
     let fmt_layer = fmt::layer()
         .with_writer(std::io::stdout)

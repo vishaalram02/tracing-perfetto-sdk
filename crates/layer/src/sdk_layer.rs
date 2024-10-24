@@ -1,7 +1,6 @@
 //! The main tracing layer and related utils exposed by this crate.
-use std::hash::{Hash, Hasher};
 use std::sync::atomic;
-use std::{env, fs, hash, process, sync, thread};
+use std::{env, fs, process, sync, thread};
 
 #[cfg(feature = "tokio")]
 use tokio::task;
@@ -10,29 +9,15 @@ use tracing_perfetto_sdk_schema as schema;
 use tracing_perfetto_sdk_sys::ffi;
 use tracing_subscriber::{layer, registry};
 
-use crate::{debug, error};
-
-static INIT: sync::Once = sync::Once::new();
-
-// Seeds for consistent hashing of pid/tid/task id
-const TRACK_UUID_NS: u32 = 1;
-
-const PROCESS_NS: u32 = 1;
-const THREAD_NS: u32 = 2;
-#[cfg(feature = "tokio")]
-const TOKIO_NS: u32 = 3;
+use crate::{debug_annotations, error, ids, init};
 
 /// A layer to be used with `tracing-subscriber` that forwards collected spans
-/// to the Perfetto SDK.
+/// to the Perfetto SDK via the C++ API.
 #[derive(Clone)]
 #[repr(transparent)]
-pub struct PerfettoSdkLayer {
+pub struct SdkLayer {
     inner: sync::Arc<Inner>,
 }
-
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[repr(transparent)]
-struct TrackUuid(u64);
 
 struct ThreadLocalCtx {
     descriptor_sent: atomic::AtomicBool,
@@ -42,16 +27,16 @@ struct Inner {
     // Mutex is only held during start and stop, never otherwise
     ffi_session: sync::Mutex<Option<cxx::UniquePtr<ffi::PerfettoTracingSession>>>,
     output_file: sync::Mutex<Option<fs::File>>,
-    process_track_uuid: TrackUuid,
+    process_track_uuid: ids::TrackUuid,
     process_descriptor_sent: atomic::AtomicBool,
     #[cfg(feature = "tokio")]
     tokio_descriptor_sent: atomic::AtomicBool,
     #[cfg(feature = "tokio")]
-    tokio_track_uuid: TrackUuid,
+    tokio_track_uuid: ids::TrackUuid,
     thread_local_ctxs: thread_local::ThreadLocal<ThreadLocalCtx>,
 }
 
-impl PerfettoSdkLayer {
+impl SdkLayer {
     pub fn from_config(
         config: schema::TraceConfig,
         output_file: Option<fs::File>,
@@ -66,9 +51,9 @@ impl PerfettoSdkLayer {
     ) -> error::Result<Self> {
         use std::os::fd::AsRawFd as _;
 
-        INIT.call_once(|| {
-            ffi::perfetto_global_init(log_callback);
-        });
+        // Shared global initialization for all layers
+        init::global_init();
+
         let fd = output_file.as_ref().map(|f| f.as_raw_fd()).unwrap_or(-1);
         // We send the config to the C++ code as encoded bytes, because it would be too
         // annoying to have some sort of shared proto struct between the Rust
@@ -79,13 +64,12 @@ impl PerfettoSdkLayer {
 
         let output_file = sync::Mutex::new(output_file);
 
-        let pid = process::id();
-        let process_track_uuid = Self::process_track_uuid(pid);
+        let process_track_uuid = ids::TrackUuid::for_process(process::id());
         let process_descriptor_sent = atomic::AtomicBool::new(false);
         #[cfg(feature = "tokio")]
         let tokio_descriptor_sent = atomic::AtomicBool::new(false);
         #[cfg(feature = "tokio")]
-        let tokio_track_uuid = Self::tokio_track_uuid();
+        let tokio_track_uuid = ids::TrackUuid::for_tokio();
         let thread_local_ctxs = thread_local::ThreadLocal::new();
 
         let inner = sync::Arc::new(Inner {
@@ -125,7 +109,7 @@ impl PerfettoSdkLayer {
 
             ffi::trace_track_descriptor_process(
                 0,
-                self.inner.process_track_uuid.0,
+                self.inner.process_track_uuid.as_raw(),
                 &process_name,
                 process::id(),
             );
@@ -142,8 +126,8 @@ impl PerfettoSdkLayer {
         if !thread_descriptor_sent {
             let tid = thread_id::get();
             ffi::trace_track_descriptor_thread(
-                self.inner.process_track_uuid.0,
-                Self::thread_track_uuid(tid).0,
+                self.inner.process_track_uuid.as_raw(),
+                ids::TrackUuid::for_thread(tid).as_raw(),
                 process::id(),
                 thread::current().name().unwrap_or(""),
                 thread_id::get() as u32,
@@ -159,8 +143,8 @@ impl PerfettoSdkLayer {
             .fetch_or(true, atomic::Ordering::Relaxed);
         if !tokio_descriptor_sent {
             ffi::trace_track_descriptor_thread(
-                self.inner.process_track_uuid.0,
-                self.inner.tokio_track_uuid.0,
+                self.inner.process_track_uuid.as_raw(),
+                self.inner.tokio_track_uuid.as_raw(),
                 process::id(),
                 "tokio-runtime",
                 1,
@@ -168,14 +152,13 @@ impl PerfettoSdkLayer {
         }
     }
 
-    fn pick_trace_track(&self) -> TrackUuid {
+    fn pick_trace_track(&self) -> ids::TrackUuid {
         #[cfg(feature = "tokio")]
         if task::try_id().is_some() {
             return self.inner.tokio_track_uuid;
         }
 
-        let tid = thread_id::get();
-        Self::thread_track_uuid(tid)
+        ids::TrackUuid::for_thread(thread_id::get())
     }
 
     pub fn flush(&self) -> error::Result<()> {
@@ -185,28 +168,9 @@ impl PerfettoSdkLayer {
     pub fn stop(&self) -> error::Result<()> {
         self.inner.stop()
     }
-
-    fn process_track_uuid(pid: u32) -> TrackUuid {
-        let mut h = hash::DefaultHasher::new();
-        (TRACK_UUID_NS, PROCESS_NS, pid).hash(&mut h);
-        TrackUuid(h.finish())
-    }
-
-    fn thread_track_uuid(tid: usize) -> TrackUuid {
-        let mut h = hash::DefaultHasher::new();
-        (TRACK_UUID_NS, THREAD_NS, tid).hash(&mut h);
-        TrackUuid(h.finish())
-    }
-
-    #[cfg(feature = "tokio")]
-    fn tokio_track_uuid() -> TrackUuid {
-        let mut h = hash::DefaultHasher::new();
-        (TRACK_UUID_NS, TOKIO_NS).hash(&mut h);
-        TrackUuid(h.finish())
-    }
 }
 
-impl<S> tracing_subscriber::Layer<S> for PerfettoSdkLayer
+impl<S> tracing_subscriber::Layer<S> for SdkLayer
 where
     S: tracing::Subscriber,
     S: for<'a> registry::LookupSpan<'a>,
@@ -216,15 +180,21 @@ where
             return;
         };
 
+        let mut debug_annotations = debug_annotations::FFIDebugAnnotations::default();
+        attrs.record(&mut debug_annotations);
+        span.extensions_mut().insert(debug_annotations);
+    }
+
+    fn on_event(&self, event: &tracing::Event<'_>, _ctx: layer::Context<'_, S>) {
         self.ensure_context_known();
 
-        let mut debug_annotations = debug::DebugAnnotations::default();
-        attrs.record(&mut debug_annotations);
+        let mut debug_annotations = debug_annotations::FFIDebugAnnotations::default();
+        event.record(&mut debug_annotations);
 
+        let meta = event.metadata();
         let track_uuid = self.pick_trace_track();
-        let meta = span.metadata();
-        ffi::trace_track_event_slice_begin(
-            track_uuid.0,
+        ffi::trace_track_event_instant(
+            track_uuid.as_raw(),
             meta.name(),
             meta.file().unwrap_or(""),
             meta.line().unwrap_or(0),
@@ -232,20 +202,25 @@ where
         );
     }
 
-    fn on_event(&self, event: &tracing::Event<'_>, _ctx: layer::Context<'_, S>) {
-        self.ensure_context_known();
+    fn on_enter(&self, id: &span::Id, ctx: layer::Context<'_, S>) {
+        let Some(span) = ctx.span(id) else {
+            return;
+        };
 
-        let mut debug_annotations = debug::DebugAnnotations::default();
-        event.record(&mut debug_annotations);
-
-        let meta = event.metadata();
         let track_uuid = self.pick_trace_track();
-        ffi::trace_track_event_instant(
-            track_uuid.0,
+        let meta = span.metadata();
+
+        self.ensure_context_known();
+        ffi::trace_track_event_slice_begin(
+            track_uuid.as_raw(),
             meta.name(),
             meta.file().unwrap_or(""),
             meta.line().unwrap_or(0),
-            &debug_annotations.as_ffi(),
+            &span
+                .extensions_mut()
+                .get_mut()
+                .unwrap_or(&mut debug_annotations::FFIDebugAnnotations::default())
+                .as_ffi(),
         );
     }
 
@@ -257,7 +232,7 @@ where
         let meta = span.metadata();
         let track_uuid = self.pick_trace_track();
         ffi::trace_track_event_slice_end(
-            track_uuid.0,
+            track_uuid.as_raw(),
             meta.name(),
             meta.file().unwrap_or(""),
             meta.line().unwrap_or(0),
@@ -304,25 +279,5 @@ impl Inner {
 impl Drop for Inner {
     fn drop(&mut self) {
         let _ = self.stop();
-    }
-}
-
-fn log_callback(level: ffi::LogLev, line: i32, filename: &str, message: &str) {
-    match level {
-        ffi::LogLev::Debug => {
-            tracing::debug!(target: "perfetto-sdk", filename, line, message);
-        }
-        ffi::LogLev::Info => {
-            tracing::info!(target: "perfetto-sdk", filename, line, message);
-        }
-        ffi::LogLev::Important => {
-            tracing::warn!(target: "perfetto-sdk", filename, line, message);
-        }
-        ffi::LogLev::Error => {
-            tracing::error!(target: "perfetto-sdk", filename, line, message);
-        }
-        ffi::LogLev {
-            repr: 4_u8..=u8::MAX,
-        } => {}
     }
 }

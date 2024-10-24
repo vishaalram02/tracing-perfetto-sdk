@@ -153,6 +153,10 @@ pub mod ffi {
             thread_tid: u32,
         );
 
+        /// Get the current trace time according to Perfetto's managed monotonic
+        /// clock(s).
+        fn trace_time_ns() -> u64;
+
         /// Start collecting traces from all data sources.
         fn start(self: Pin<&mut PerfettoTracingSession>);
 
