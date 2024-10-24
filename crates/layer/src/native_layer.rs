@@ -12,7 +12,7 @@ use tracing_perfetto_sdk_sys as sys;
 use tracing_perfetto_sdk_sys::ffi;
 use tracing_subscriber::{fmt, layer, registry};
 
-use crate::{debug_annotations, error, ids, init};
+use crate::{debug_annotations, error, flavor, ids, init};
 
 /// A layer to be used with `tracing-subscriber` that natively writes the
 /// Perfetto trace packets in Rust code, but also polls the Perfetto SDK for
@@ -98,16 +98,21 @@ impl<W> NativeLayer<W> {
         Ok(Self { inner })
     }
 
-    fn pick_trace_track_sequence(&self) -> (ids::TrackUuid, ids::SequenceId) {
+    fn pick_trace_track_sequence(&self) -> (ids::TrackUuid, ids::SequenceId, flavor::Flavor) {
         #[cfg(feature = "tokio")]
         if let Some(id) = task::try_id() {
-            return (self.inner.tokio_track_uuid, ids::SequenceId::for_task(id));
+            return (
+                self.inner.tokio_track_uuid,
+                ids::SequenceId::for_task(id),
+                flavor::Flavor::Async,
+            );
         }
 
         let tid = thread_id::get();
         (
             ids::TrackUuid::for_thread(tid),
             ids::SequenceId::for_thread(tid),
+            flavor::Flavor::Sync,
         )
     }
 
@@ -272,33 +277,73 @@ where
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: layer::Context<'_, S>) {
         let span = ctx.span(id).expect("span to be found (this is a bug)");
 
-        let (track_uuid, sequence_id) = self.pick_trace_track_sequence();
-        span.extensions_mut().replace(sequence_id);
+        let (track_uuid, sequence_id, flavor) = self.pick_trace_track_sequence();
+        span.extensions_mut().insert(sequence_id);
         let meta = span.metadata();
 
         let mut debug_annotations = debug_annotations::ProtoDebugAnnotations::default();
         attrs.record(&mut debug_annotations);
 
-        let packet = schema::TracePacket {
-            timestamp: Some(ffi::trace_time_ns()),
-            optional_trusted_packet_sequence_id: Some(
-                trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
-                    sequence_id.as_raw(),
+        if flavor == flavor::Flavor::Sync {
+            let packet = schema::TracePacket {
+                timestamp: Some(ffi::trace_time_ns()),
+                optional_trusted_packet_sequence_id: Some(
+                    trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
+                        sequence_id.as_raw(),
+                    ),
                 ),
-            ),
-            data: Some(trace_packet::Data::TrackEvent(schema::TrackEvent {
-                r#type: Some(track_event::Type::SliceBegin as i32),
-                track_uuid: Some(track_uuid.as_raw()),
-                name_field: Some(track_event::NameField::Name(meta.name().to_owned())),
-                debug_annotations: debug_annotations.into_proto(),
-                source_location_field: source_location_field(meta),
+                data: Some(trace_packet::Data::TrackEvent(schema::TrackEvent {
+                    r#type: Some(track_event::Type::SliceBegin as i32),
+                    track_uuid: Some(track_uuid.as_raw()),
+                    name_field: Some(track_event::NameField::Name(meta.name().to_owned())),
+                    debug_annotations: debug_annotations.clone().into_proto(),
+                    source_location_field: source_location_field(meta),
+                    ..Default::default()
+                })),
                 ..Default::default()
-            })),
-            ..Default::default()
-        };
+            };
 
-        self.ensure_context_known(meta);
-        self.write_packet(meta, packet);
+            self.ensure_context_known(meta);
+            self.write_packet(meta, packet);
+        }
+
+        span.extensions_mut().insert(debug_annotations);
+    }
+
+    fn on_enter(&self, id: &span::Id, ctx: layer::Context<'_, S>) {
+        let span = ctx.span(id).expect("span to be found (this is a bug)");
+
+        let (track_uuid, sequence_id, flavor) = self.pick_trace_track_sequence();
+        let meta = span.metadata();
+
+        if flavor == flavor::Flavor::Async {
+            span.extensions_mut().replace(sequence_id);
+
+            let packet = schema::TracePacket {
+                timestamp: Some(ffi::trace_time_ns()),
+                optional_trusted_packet_sequence_id: Some(
+                    trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
+                        sequence_id.as_raw(),
+                    ),
+                ),
+                data: Some(trace_packet::Data::TrackEvent(schema::TrackEvent {
+                    r#type: Some(track_event::Type::SliceBegin as i32),
+                    track_uuid: Some(track_uuid.as_raw()),
+                    name_field: Some(track_event::NameField::Name(meta.name().to_owned())),
+                    debug_annotations: span
+                        .extensions()
+                        .get::<debug_annotations::ProtoDebugAnnotations>()
+                        .map(|da| da.clone().into_proto())
+                        .unwrap_or_default(),
+                    source_location_field: source_location_field(meta),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+
+            self.ensure_context_known(meta);
+            self.write_packet(meta, packet);
+        }
     }
 
     fn on_record(&self, id: &tracing::Id, values: &span::Record<'_>, ctx: layer::Context<'_, S>) {
@@ -321,7 +366,7 @@ where
         event.record(&mut debug_annotations);
 
         let meta = event.metadata();
-        let (track_uuid, sequence_id) = self.pick_trace_track_sequence();
+        let (track_uuid, sequence_id, _) = self.pick_trace_track_sequence();
 
         let packet = schema::TracePacket {
             timestamp: Some(ffi::trace_time_ns()),
@@ -349,30 +394,66 @@ where
         let span = ctx.span(&id).expect("span to be found (this is a bug)");
 
         let meta = span.metadata();
-        let (track_uuid, sequence_id) = self.pick_trace_track_sequence();
+        let (track_uuid, sequence_id, flavor) = self.pick_trace_track_sequence();
         let extensions = span.extensions();
-        let entered_sequence_id = extensions.get::<ids::SequenceId>();
-        let sequence_id = entered_sequence_id.unwrap_or(&sequence_id);
 
-        let packet = schema::TracePacket {
-            timestamp: Some(ffi::trace_time_ns()),
-            optional_trusted_packet_sequence_id: Some(
-                trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
-                    sequence_id.as_raw(),
+        if flavor == flavor::Flavor::Sync {
+            let entered_sequence_id = extensions.get::<ids::SequenceId>();
+            let sequence_id = entered_sequence_id.unwrap_or(&sequence_id);
+
+            let packet = schema::TracePacket {
+                timestamp: Some(ffi::trace_time_ns()),
+                optional_trusted_packet_sequence_id: Some(
+                    trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
+                        sequence_id.as_raw(),
+                    ),
                 ),
-            ),
-            data: Some(trace_packet::Data::TrackEvent(schema::TrackEvent {
-                r#type: Some(track_event::Type::SliceEnd as i32),
-                track_uuid: Some(track_uuid.as_raw()),
-                name_field: Some(track_event::NameField::Name(meta.name().to_owned())),
-                source_location_field: source_location_field(meta),
+                data: Some(trace_packet::Data::TrackEvent(schema::TrackEvent {
+                    r#type: Some(track_event::Type::SliceEnd as i32),
+                    track_uuid: Some(track_uuid.as_raw()),
+                    name_field: Some(track_event::NameField::Name(meta.name().to_owned())),
+                    source_location_field: source_location_field(meta),
+                    ..Default::default()
+                })),
                 ..Default::default()
-            })),
-            ..Default::default()
-        };
+            };
 
-        self.ensure_context_known(meta);
-        self.write_packet(meta, packet);
+            self.ensure_context_known(meta);
+            self.write_packet(meta, packet);
+        }
+    }
+
+    fn on_exit(&self, id: &tracing::Id, ctx: layer::Context<'_, S>) {
+        let span = ctx.span(id).expect("span to be found (this is a bug)");
+
+        let meta = span.metadata();
+        let (track_uuid, sequence_id, flavor) = self.pick_trace_track_sequence();
+        let extensions = span.extensions();
+
+        if flavor == flavor::Flavor::Async {
+            let entered_sequence_id = extensions.get::<ids::SequenceId>();
+            let sequence_id = entered_sequence_id.unwrap_or(&sequence_id);
+
+            let packet = schema::TracePacket {
+                timestamp: Some(ffi::trace_time_ns()),
+                optional_trusted_packet_sequence_id: Some(
+                    trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
+                        sequence_id.as_raw(),
+                    ),
+                ),
+                data: Some(trace_packet::Data::TrackEvent(schema::TrackEvent {
+                    r#type: Some(track_event::Type::SliceEnd as i32),
+                    track_uuid: Some(track_uuid.as_raw()),
+                    name_field: Some(track_event::NameField::Name(meta.name().to_owned())),
+                    source_location_field: source_location_field(meta),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+
+            self.ensure_context_known(meta);
+            self.write_packet(meta, packet);
+        }
     }
 }
 

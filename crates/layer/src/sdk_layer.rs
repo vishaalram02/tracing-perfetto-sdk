@@ -9,7 +9,7 @@ use tracing_perfetto_sdk_schema as schema;
 use tracing_perfetto_sdk_sys::ffi;
 use tracing_subscriber::{layer, registry};
 
-use crate::{debug_annotations, error, ids, init};
+use crate::{debug_annotations, error, flavor, ids, init};
 
 /// A layer to be used with `tracing-subscriber` that forwards collected spans
 /// to the Perfetto SDK via the C++ API.
@@ -155,13 +155,16 @@ impl SdkLayer {
         }
     }
 
-    fn pick_trace_track(&self) -> ids::TrackUuid {
+    fn pick_trace_track(&self) -> (ids::TrackUuid, flavor::Flavor) {
         #[cfg(feature = "tokio")]
         if task::try_id().is_some() {
-            return self.inner.tokio_track_uuid;
+            return (self.inner.tokio_track_uuid, flavor::Flavor::Async);
         }
 
-        ids::TrackUuid::for_thread(thread_id::get())
+        (
+            ids::TrackUuid::for_thread(thread_id::get()),
+            flavor::Flavor::Sync,
+        )
     }
 
     pub fn flush(&self) -> error::Result<()> {
@@ -181,20 +184,46 @@ where
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: layer::Context<'_, S>) {
         let span = ctx.span(id).expect("span to be found (this is a bug)");
 
-        let track_uuid = self.pick_trace_track();
+        let (track_uuid, flavor) = self.pick_trace_track();
         let meta = span.metadata();
 
         let mut debug_annotations = debug_annotations::FFIDebugAnnotations::default();
         attrs.record(&mut debug_annotations);
 
-        self.ensure_context_known();
-        ffi::trace_track_event_slice_begin(
-            track_uuid.as_raw(),
-            meta.name(),
-            meta.file().unwrap_or(""),
-            meta.line().unwrap_or(0),
-            &debug_annotations.as_ffi(),
-        );
+        if flavor == flavor::Flavor::Sync {
+            self.ensure_context_known();
+            ffi::trace_track_event_slice_begin(
+                track_uuid.as_raw(),
+                meta.name(),
+                meta.file().unwrap_or_default(),
+                meta.line().unwrap_or_default(),
+                &debug_annotations.as_ffi(),
+            );
+        }
+
+        span.extensions_mut().insert(debug_annotations);
+    }
+
+    fn on_enter(&self, id: &span::Id, ctx: layer::Context<'_, S>) {
+        let span = ctx.span(id).expect("span to be found (this is a bug)");
+
+        let (track_uuid, flavor) = self.pick_trace_track();
+        let meta = span.metadata();
+
+        if flavor == flavor::Flavor::Async {
+            self.ensure_context_known();
+            ffi::trace_track_event_slice_begin(
+                track_uuid.as_raw(),
+                meta.name(),
+                meta.file().unwrap_or_default(),
+                meta.line().unwrap_or_default(),
+                &span
+                    .extensions()
+                    .get()
+                    .unwrap_or(&debug_annotations::FFIDebugAnnotations::default())
+                    .as_ffi(),
+            );
+        }
     }
 
     fn on_record(&self, id: &tracing::Id, values: &span::Record<'_>, ctx: layer::Context<'_, S>) {
@@ -219,27 +248,45 @@ where
         event.record(&mut debug_annotations);
 
         let meta = event.metadata();
-        let track_uuid = self.pick_trace_track();
+        let (track_uuid, _) = self.pick_trace_track();
         ffi::trace_track_event_instant(
             track_uuid.as_raw(),
             meta.name(),
-            meta.file().unwrap_or(""),
-            meta.line().unwrap_or(0),
+            meta.file().unwrap_or_default(),
+            meta.line().unwrap_or_default(),
             &debug_annotations.as_ffi(),
         );
+    }
+
+    fn on_exit(&self, id: &tracing::Id, ctx: layer::Context<'_, S>) {
+        let span = ctx.span(id).expect("span to be found (this is a bug)");
+
+        let meta = span.metadata();
+        let (track_uuid, flavor) = self.pick_trace_track();
+
+        if flavor == flavor::Flavor::Async {
+            ffi::trace_track_event_slice_end(
+                track_uuid.as_raw(),
+                meta.name(),
+                meta.file().unwrap_or_default(),
+                meta.line().unwrap_or_default(),
+            );
+        }
     }
 
     fn on_close(&self, id: tracing::Id, ctx: layer::Context<'_, S>) {
         let span = ctx.span(&id).expect("span to be found (this is a bug)");
 
         let meta = span.metadata();
-        let track_uuid = self.pick_trace_track();
-        ffi::trace_track_event_slice_end(
-            track_uuid.as_raw(),
-            meta.name(),
-            meta.file().unwrap_or(""),
-            meta.line().unwrap_or(0),
-        );
+        let (track_uuid, flavor) = self.pick_trace_track();
+        if flavor == flavor::Flavor::Sync {
+            ffi::trace_track_event_slice_end(
+                track_uuid.as_raw(),
+                meta.name(),
+                meta.file().unwrap_or_default(),
+                meta.line().unwrap_or_default(),
+            );
+        }
     }
 }
 

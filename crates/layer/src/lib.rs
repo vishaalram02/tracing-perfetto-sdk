@@ -2,6 +2,7 @@
 /// # `tracing-perfetto-sdk-layer`: A tracing layer that reports traces via the C++ Perfetto SDK
 // Internal modules:
 mod debug_annotations;
+mod flavor;
 mod ids;
 mod init;
 
