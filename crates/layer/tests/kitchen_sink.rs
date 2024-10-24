@@ -43,7 +43,8 @@ data_sources:
         stat_counters: [STAT_CPU_TIMES, STAT_FORK_COUNT]
 "#,
     )?;
-    let perfetto_layer = layer::SdkLayer::from_config(config, Some(file))?;
+    let (nb, guard) = tracing_appender::non_blocking(file);
+    let perfetto_layer = layer::NativeLayer::from_config(config, nb)?;
 
     let fmt_layer = fmt::layer()
         .with_writer(std::io::stdout)
@@ -62,6 +63,7 @@ data_sources:
 
     info!("in span");
     sync_fn(1);
+    sync_fn(2);
     let handle = runtime::Handle::current();
     let t = std::thread::spawn(move || {
         handle.spawn(async_fn());
@@ -75,6 +77,7 @@ data_sources:
     drop(enter);
     perfetto_layer.flush()?;
     perfetto_layer.stop()?;
+    drop(guard);
 
     let trace_data = fs::read(trace_path)?;
     let trace = schema::Trace::decode(&*trace_data)?;

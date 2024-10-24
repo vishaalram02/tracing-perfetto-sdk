@@ -2,6 +2,7 @@
 use std::sync::atomic;
 use std::{env, process, sync, thread};
 
+use prost::encoding;
 #[cfg(feature = "tokio")]
 use tokio::task;
 use tracing::span;
@@ -217,12 +218,30 @@ where
     }
 
     fn write_packet(&self, meta: &tracing::Metadata, packet: schema::TracePacket) {
+        // The field tag of `packet` within the `Trace` proto message.
+        const PACKET_FIELD_TAG: u32 = 1;
+
         use std::io::Write as _;
 
         use prost::Message as _;
 
-        let mut writer = self.inner.writer.make_writer_for(meta);
-        let _ = writer.write_all(&packet.encode_length_delimited_to_vec());
+        // We will insert a protobuf field header before the written packet, which will
+        // take the shape `[0x06, <length varint bytes>]` where the `<length varint
+        // bytes>` takes between 1 and 10 bytes depending on the size of the packet.
+        let packet_len = packet.encoded_len() as u64;
+        let varint_len = encoding::encoded_len_varint(packet_len);
+        let mut buf = bytes::BytesMut::with_capacity(1 + varint_len + packet.encoded_len());
+        encoding::encode_key(
+            PACKET_FIELD_TAG,
+            encoding::WireType::LengthDelimited,
+            &mut buf,
+        );
+        encoding::encode_varint(packet_len, &mut buf);
+        packet
+            .encode(&mut buf)
+            .expect("buf should have had sufficient capacity");
+
+        let _ = self.inner.writer.make_writer_for(meta).write_all(&buf);
     }
 }
 
@@ -240,41 +259,6 @@ where
         let mut debug_annotations = debug_annotations::ProtoDebugAnnotations::default();
         attrs.record(&mut debug_annotations);
         span.extensions_mut().insert(debug_annotations);
-    }
-
-    fn on_enter(&self, id: &span::Id, ctx: layer::Context<'_, S>) {
-        let Some(span) = ctx.span(id) else {
-            return;
-        };
-
-        let (track_uuid, sequence_id) = self.pick_trace_track_sequence();
-        let meta = span.metadata();
-
-        let packet = schema::TracePacket {
-            timestamp: Some(ffi::trace_time_ns()),
-            optional_trusted_packet_sequence_id: Some(
-                trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
-                    sequence_id.as_raw(),
-                ),
-            ),
-            data: Some(trace_packet::Data::TrackEvent(schema::TrackEvent {
-                r#type: Some(track_event::Type::SliceBegin as i32),
-                track_uuid: Some(track_uuid.as_raw()),
-                name_field: Some(track_event::NameField::Name(meta.name().to_owned())),
-                debug_annotations: span
-                    .extensions_mut()
-                    .get_mut()
-                    .cloned()
-                    .map(debug_annotations::ProtoDebugAnnotations::into_proto)
-                    .unwrap_or(Vec::new()),
-                source_location_field: source_location_field(meta),
-                ..Default::default()
-            })),
-            ..Default::default()
-        };
-
-        self.ensure_context_known(meta);
-        self.write_packet(meta, packet);
     }
 
     fn on_event(&self, event: &tracing::Event<'_>, _ctx: layer::Context<'_, S>) {
@@ -302,6 +286,41 @@ where
             })),
             ..Default::default()
         };
+        self.write_packet(meta, packet);
+    }
+
+    fn on_enter(&self, id: &span::Id, ctx: layer::Context<'_, S>) {
+        let Some(span) = ctx.span(id) else {
+            return;
+        };
+
+        let (track_uuid, sequence_id) = self.pick_trace_track_sequence();
+        let meta = span.metadata();
+
+        let packet = schema::TracePacket {
+            timestamp: Some(ffi::trace_time_ns()),
+            optional_trusted_packet_sequence_id: Some(
+                trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
+                    sequence_id.as_raw(),
+                ),
+            ),
+            data: Some(trace_packet::Data::TrackEvent(schema::TrackEvent {
+                r#type: Some(track_event::Type::SliceBegin as i32),
+                track_uuid: Some(track_uuid.as_raw()),
+                name_field: Some(track_event::NameField::Name(meta.name().to_owned())),
+                debug_annotations: span
+                    .extensions()
+                    .get()
+                    .cloned()
+                    .map(debug_annotations::ProtoDebugAnnotations::into_proto)
+                    .unwrap_or(Vec::new()),
+                source_location_field: source_location_field(meta),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
+        self.ensure_context_known(meta);
         self.write_packet(meta, packet);
     }
 

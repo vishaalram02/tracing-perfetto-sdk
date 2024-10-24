@@ -20,6 +20,7 @@ tracing-subscriber.workspace = true
 anyhow.workspace = true
 serde_yaml.workspace = true
 tokio = { workspace = true, features = ["macros", "time", "rt-multi-thread"] }
+tracing-appender.workspace = true
 
 [features]
 tokio = ["dep:tokio"]
