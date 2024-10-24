@@ -204,28 +204,6 @@ where
         span.extensions_mut().insert(debug_annotations);
     }
 
-    fn on_enter(&self, id: &span::Id, ctx: layer::Context<'_, S>) {
-        let span = ctx.span(id).expect("span to be found (this is a bug)");
-
-        let (track_uuid, flavor) = self.pick_trace_track();
-        let meta = span.metadata();
-
-        if flavor == flavor::Flavor::Async {
-            self.ensure_context_known();
-            ffi::trace_track_event_slice_begin(
-                track_uuid.as_raw(),
-                meta.name(),
-                meta.file().unwrap_or_default(),
-                meta.line().unwrap_or_default(),
-                &span
-                    .extensions()
-                    .get()
-                    .unwrap_or(&debug_annotations::FFIDebugAnnotations::default())
-                    .as_ffi(),
-            );
-        }
-    }
-
     fn on_record(&self, id: &tracing::Id, values: &span::Record<'_>, ctx: layer::Context<'_, S>) {
         let span = ctx.span(id).expect("span to be found (this is a bug)");
 
@@ -256,6 +234,28 @@ where
             meta.line().unwrap_or_default(),
             &debug_annotations.as_ffi(),
         );
+    }
+
+    fn on_enter(&self, id: &span::Id, ctx: layer::Context<'_, S>) {
+        let span = ctx.span(id).expect("span to be found (this is a bug)");
+
+        let (track_uuid, flavor) = self.pick_trace_track();
+        let meta = span.metadata();
+
+        if flavor == flavor::Flavor::Async {
+            self.ensure_context_known();
+            ffi::trace_track_event_slice_begin(
+                track_uuid.as_raw(),
+                meta.name(),
+                meta.file().unwrap_or_default(),
+                meta.line().unwrap_or_default(),
+                &span
+                    .extensions()
+                    .get()
+                    .unwrap_or(&debug_annotations::FFIDebugAnnotations::default())
+                    .as_ffi(),
+            );
+        }
     }
 
     fn on_exit(&self, id: &tracing::Id, ctx: layer::Context<'_, S>) {
