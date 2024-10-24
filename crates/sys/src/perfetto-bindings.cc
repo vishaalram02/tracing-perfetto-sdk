@@ -159,7 +159,9 @@ void trace_track_event_slice_begin(uint64_t track_uuid, rust::Str name,
       auto source_location = track_event->set_source_location();
       source_location->set_file_name(location_file.data(),
                                      location_file.size());
-      source_location->set_line_number(location_line);
+      if (location_line) {
+        source_location->set_line_number(location_line);
+      }
     }
   });
 }
@@ -185,7 +187,9 @@ void trace_track_event_slice_end(uint64_t track_uuid, rust::Str name,
       auto source_location = track_event->set_source_location();
       source_location->set_file_name(location_file.data(),
                                      location_file.size());
-      source_location->set_line_number(location_line);
+      if (location_line) {
+        source_location->set_line_number(location_line);
+      }
     }
   });
 }
@@ -212,7 +216,9 @@ void trace_track_event_instant(uint64_t track_uuid, rust::Str name,
       auto source_location = track_event->set_source_location();
       source_location->set_file_name(location_file.data(),
                                      location_file.size());
-      source_location->set_line_number(location_line);
+      if (location_line) {
+        source_location->set_line_number(location_line);
+      }
     }
   });
 }
