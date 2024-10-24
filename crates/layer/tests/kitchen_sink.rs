@@ -1,8 +1,10 @@
 use std::{env, fs};
 
+use schema::trace_packet;
 use tokio::{runtime, time};
 use tracing::{info, span};
 use tracing_perfetto_sdk_layer as layer;
+use tracing_perfetto_sdk_schema as schema;
 use tracing_subscriber::fmt;
 use tracing_subscriber::fmt::format;
 
@@ -55,7 +57,7 @@ data_sources:
     info!(?trace_path, "start");
 
     let demo_span = span!(tracing::Level::TRACE, "demo_span");
-    let _enter = demo_span.enter();
+    let enter = demo_span.enter();
 
     info!("in span");
     sync_fn(1);
@@ -69,13 +71,71 @@ data_sources:
 
     time::sleep(time::Duration::from_secs(1)).await;
 
+    drop(enter);
     perfetto_layer.flush()?;
     perfetto_layer.stop()?;
 
     let trace_data = fs::read(trace_path)?;
-    let trace = tracing_perfetto_sdk_schema::Trace::decode(&*trace_data)?;
-    eprintln!("trace = {}", serde_yaml::to_string(&trace)?);
+    let trace = schema::Trace::decode(&*trace_data)?;
+    // eprintln!("trace = {}", serde_yaml::to_string(&trace)?);
+
+    let process_td = trace
+        .packet
+        .iter()
+        .find_map(|p| {
+            let td = as_track_descriptor(p)?;
+            if td
+                .process
+                .as_ref()?
+                .process_name
+                .as_ref()?
+                .starts_with("kitchen_sink-")
+            {
+                Some(td)
+            } else {
+                None
+            }
+        })
+        .expect("to find a process descriptor for this test");
+
+    let thread_td = trace
+        .packet
+        .iter()
+        .find_map(|p| {
+            let td = as_track_descriptor(p)?;
+            if td.thread.as_ref()?.thread_name.as_ref()? == "kitchen_sink" {
+                Some(td)
+            } else {
+                None
+            }
+        })
+        .expect("to find a track descriptor for this test");
+
+    assert_eq!(process_td.uuid, thread_td.parent_uuid);
+
+    let tokio_td = trace
+        .packet
+        .iter()
+        .find_map(|p| {
+            let td = as_track_descriptor(p)?;
+            if td.thread.as_ref()?.thread_name.as_ref()? == "tokio-runtime" {
+                Some(td)
+            } else {
+                None
+            }
+        })
+        .expect("to find a track descriptor for the Tokio runtime");
+
+    assert_eq!(process_td.uuid, tokio_td.parent_uuid);
+
     Ok(())
+}
+
+fn as_track_descriptor(packet: &schema::TracePacket) -> Option<&schema::TrackDescriptor> {
+    match packet.data {
+        Some(trace_packet::Data::TrackDescriptor(ref td)) => Some(td),
+        _ => None,
+    }
 }
 
 #[tracing::instrument]
