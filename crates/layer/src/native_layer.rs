@@ -413,10 +413,11 @@ where
 
         let (track_uuid, sequence_id, flavor) = self.pick_trace_track_sequence();
         let meta = span.metadata();
-        span.extensions_mut().replace(track_uuid);
-        span.extensions_mut().replace(sequence_id);
 
         if flavor == flavor::Flavor::Async {
+            span.extensions_mut().replace(track_uuid);
+            span.extensions_mut().replace(sequence_id);
+
             let debug_annotations = span
                 .extensions()
                 .get::<debug_annotations::ProtoDebugAnnotations>()
