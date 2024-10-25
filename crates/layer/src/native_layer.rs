@@ -359,7 +359,7 @@ where
         attrs.record(&mut debug_annotations);
         span.extensions_mut().insert(debug_annotations.clone());
 
-        if flavor == flavor::Flavor::Sync {
+        if flavor == flavor::Flavor::Async {
             self.slice_begin(meta, track_uuid, sequence_id, debug_annotations);
         }
     }
@@ -414,7 +414,7 @@ where
         let (track_uuid, sequence_id, flavor) = self.pick_trace_track_sequence();
         let meta = span.metadata();
 
-        if flavor == flavor::Flavor::Async {
+        if flavor == flavor::Flavor::Sync {
             span.extensions_mut().replace(track_uuid);
             span.extensions_mut().replace(sequence_id);
 
@@ -434,7 +434,7 @@ where
         let (track_uuid, sequence_id, flavor) = self.pick_trace_track_sequence();
         let extensions = span.extensions();
 
-        if flavor == flavor::Flavor::Async {
+        if flavor == flavor::Flavor::Sync {
             self.slice_end(meta, track_uuid, sequence_id, extensions);
         }
     }
@@ -446,7 +446,7 @@ where
         let (track_uuid, sequence_id, flavor) = self.pick_trace_track_sequence();
         let extensions = span.extensions();
 
-        if flavor == flavor::Flavor::Sync {
+        if flavor == flavor::Flavor::Async {
             self.slice_end(meta, track_uuid, sequence_id, extensions);
         }
     }
