@@ -31,6 +31,7 @@ struct Inner<W> {
     // Mutex is held during start and stop, and by the background thread polling for events
     ffi_session: sync::Arc<sync::Mutex<Option<cxx::UniquePtr<ffi::PerfettoTracingSession>>>>,
     writer: sync::Arc<W>,
+    force_flavor: Option<flavor::Flavor>,
     process_track_uuid: ids::TrackUuid,
     process_descriptor_sent: atomic::AtomicBool,
     #[cfg(feature = "tokio")]
@@ -44,12 +45,20 @@ impl<W> NativeLayer<W>
 where
     W: for<'w> fmt::MakeWriter<'w> + Send + Sync + 'static,
 {
-    pub fn from_config(config: schema::TraceConfig, writer: W) -> error::Result<Self> {
+    pub fn from_config(
+        config: schema::TraceConfig,
+        writer: W,
+        force_flavor: Option<flavor::Flavor>,
+    ) -> error::Result<Self> {
         use prost::Message as _;
-        Self::from_config_bytes(&config.encode_to_vec(), writer)
+        Self::from_config_bytes(&config.encode_to_vec(), writer, force_flavor)
     }
 
-    pub fn from_config_bytes(config_bytes: &[u8], writer: W) -> error::Result<Self> {
+    pub fn from_config_bytes(
+        config_bytes: &[u8],
+        writer: W,
+        force_flavor: Option<flavor::Flavor>,
+    ) -> error::Result<Self> {
         // Shared global initialization for all layers
         init::global_init();
 
@@ -98,6 +107,7 @@ where
         let inner = sync::Arc::new(Inner {
             ffi_session,
             writer,
+            force_flavor,
             process_track_uuid,
             process_descriptor_sent,
             #[cfg(feature = "tokio")]
@@ -111,21 +121,51 @@ where
     }
 
     fn pick_trace_track_sequence(&self) -> (ids::TrackUuid, ids::SequenceId, flavor::Flavor) {
-        #[cfg(feature = "tokio")]
-        if let Some(id) = task::try_id() {
-            return (
-                self.inner.tokio_track_uuid,
-                ids::SequenceId::for_task(id),
-                flavor::Flavor::Async,
-            );
-        }
+        if let Some(flavor) = self.inner.force_flavor.as_ref() {
+            match *flavor {
+                flavor::Flavor::Sync => {
+                    let tid = thread_id::get();
+                    (
+                        self.inner.process_track_uuid,
+                        ids::SequenceId::for_thread(tid),
+                        flavor::Flavor::Sync,
+                    )
+                }
+                flavor::Flavor::Async => {
+                    #[cfg(feature = "tokio")]
+                    if let Some(id) = task::try_id() {
+                        return (
+                            self.inner.process_track_uuid,
+                            ids::SequenceId::for_task(id),
+                            flavor::Flavor::Async,
+                        );
+                    }
 
-        let tid = thread_id::get();
-        (
-            ids::TrackUuid::for_thread(tid),
-            ids::SequenceId::for_thread(tid),
-            flavor::Flavor::Sync,
-        )
+                    let tid = thread_id::get();
+                    (
+                        self.inner.process_track_uuid,
+                        ids::SequenceId::for_thread(tid),
+                        flavor::Flavor::Async,
+                    )
+                }
+            }
+        } else {
+            #[cfg(feature = "tokio")]
+            if let Some(id) = task::try_id() {
+                return (
+                    self.inner.tokio_track_uuid,
+                    ids::SequenceId::for_task(id),
+                    flavor::Flavor::Async,
+                );
+            }
+
+            let tid = thread_id::get();
+            (
+                ids::TrackUuid::for_thread(tid),
+                ids::SequenceId::for_thread(tid),
+                flavor::Flavor::Sync,
+            )
+        }
     }
 
     pub fn flush(&self) -> error::Result<()> {
