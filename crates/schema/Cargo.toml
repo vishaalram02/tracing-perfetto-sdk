@@ -1,5 +1,8 @@
 [package]
 name = "tracing-perfetto-sdk-schema"
+description = "Perfetto Prost protobuf bindings used by tracing-perfetto-sdk"
+license = "Apache-2.0"
+repository = "https://github.com/modal-labs/tracing-perfetto-sdk"
 version.workspace = true
 edition.workspace = true
 
