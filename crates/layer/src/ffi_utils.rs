@@ -27,7 +27,7 @@ pub fn do_poll_traces(
     session: &mut cxx::UniquePtr<ffi::PerfettoTracingSession>,
     timeout: time::Duration,
 ) -> error::Result<sys::PolledTraces> {
-    let (ctx, rx) = sys::PollTracesCtx::new();
+    let (ctx, rx) = sys::PollTracesCtx::new_sync();
     session
         .pin_mut()
         .poll_traces(Box::new(ctx), sys::PollTracesCtx::callback);
@@ -38,7 +38,7 @@ pub fn do_flush(
     session: &mut cxx::UniquePtr<ffi::PerfettoTracingSession>,
     timeout: time::Duration,
 ) -> error::Result<()> {
-    let (ctx, rx) = sys::FlushCtx::new();
+    let (ctx, rx) = sys::FlushCtx::new_sync();
 
     session.pin_mut().flush(
         timeout.as_millis() as u32,

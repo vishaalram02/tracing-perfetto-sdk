@@ -6,7 +6,9 @@
 #![deny(clippy::all)]
 
 use std::sync::mpsc;
-use std::sync::mpsc::Receiver;
+
+#[cfg(feature = "async")]
+use futures::channel::oneshot;
 
 /// FFI bridge: Definitions of functions and types that are shared across the
 /// C++ boundary.
@@ -208,25 +210,23 @@ unsafe impl Sync for ffi::PerfettoTracingSession {}
 
 /// A context that will be passed-in in a call to [`ffi::poll_traces`] and later
 /// passed back in the `done` callback when the async operation has completed.
-// TODO: here we use synchronous channels, but maybe we can support async as
-// well?
-pub struct PollTracesCtx {
-    tx: mpsc::Sender<PolledTraces>,
-}
+pub struct PollTracesCtx(CallbackSender<PolledTraces>);
 
 /// A context that will be passed-in in a call to [`ffi::flush`] and later
 /// passed back in the `done` callback when the async operation has completed.
-// TODO: here we use synchronous channels, but maybe we can support async as
-// well?
-pub struct FlushCtx {
-    tx: mpsc::Sender<bool>,
-}
+pub struct FlushCtx(CallbackSender<bool>);
 
 /// Traces returned from `poll_traces`/the channel returned by
 /// `PollTracesCtx::new`.
 pub struct PolledTraces {
     pub data: bytes::BytesMut,
     pub has_more: bool,
+}
+
+enum CallbackSender<A> {
+    Sync(mpsc::Sender<A>),
+    #[cfg(feature = "async")]
+    Async(Option<oneshot::Sender<A>>),
 }
 
 /// A context to be passed into `poll_traces`.
@@ -238,20 +238,28 @@ pub struct PolledTraces {
 /// # use tracing_perfetto_sdk_sys::ffi::PerfettoTracingSession;
 /// # use tracing_perfetto_sdk_sys::{PollTracesCtx, PolledTraces};
 /// let session: Pin<&mut PerfettoTracingSession> = todo!();
-/// let (ctx, rx) = PollTracesCtx::new();
+/// let (ctx, rx) = PollTracesCtx::new_sync();
 /// session.poll_traces(Box::new(ctx), PollTracesCtx::callback);
 /// let polled_traces: PolledTraces = rx.recv().unwrap(); // Should return polled traces
 /// ```
 impl PollTracesCtx {
-    pub fn new() -> (Self, Receiver<PolledTraces>) {
+    pub fn new_sync() -> (Self, mpsc::Receiver<PolledTraces>) {
         let (tx, rx) = mpsc::channel();
-        (Self { tx }, rx)
+        let tx = CallbackSender::Sync(tx);
+        (Self(tx), rx)
+    }
+
+    #[cfg(feature = "async")]
+    pub fn new_async() -> (Self, oneshot::Receiver<PolledTraces>) {
+        let (tx, rx) = oneshot::channel();
+        let tx = CallbackSender::Async(Some(tx));
+        (Self(tx), rx)
     }
 
     #[allow(clippy::boxed_local)]
-    pub fn callback(self: Box<Self>, data: &[u8], has_more: bool) {
+    pub fn callback(mut self: Box<Self>, data: &[u8], has_more: bool) {
         let data = bytes::BytesMut::from(data);
-        let _ = self.tx.send(PolledTraces { data, has_more });
+        self.0.send(PolledTraces { data, has_more });
     }
 }
 
@@ -264,19 +272,43 @@ impl PollTracesCtx {
 /// # use tracing_perfetto_sdk_sys::ffi::PerfettoTracingSession;
 /// # use tracing_perfetto_sdk_sys::FlushCtx;
 /// let session: Pin<&mut PerfettoTracingSession> = todo!();
-/// let (ctx, rx) = FlushCtx::new();
+/// let (ctx, rx) = FlushCtx::new_sync();
 /// let timeout_ms = 100;
 /// session.flush(timeout_ms, Box::new(ctx), FlushCtx::callback);
 /// let success: bool = rx.recv().unwrap();
 /// ```
 impl FlushCtx {
-    pub fn new() -> (Self, Receiver<bool>) {
+    pub fn new_sync() -> (Self, mpsc::Receiver<bool>) {
         let (tx, rx) = mpsc::channel();
-        (Self { tx }, rx)
+        let tx = CallbackSender::Sync(tx);
+        (Self(tx), rx)
+    }
+
+    #[cfg(feature = "async")]
+    pub fn new_async() -> (Self, oneshot::Receiver<bool>) {
+        let (tx, rx) = oneshot::channel();
+        let tx = CallbackSender::Async(Some(tx));
+        (Self(tx), rx)
     }
 
     #[allow(clippy::boxed_local)]
-    pub fn callback(self: Box<Self>, success: bool) {
-        let _ = self.tx.send(success);
+    pub fn callback(mut self: Box<Self>, success: bool) {
+        self.0.send(success);
+    }
+}
+
+impl<A> CallbackSender<A> {
+    fn send(&mut self, value: A) {
+        match self {
+            CallbackSender::Sync(ref mut tx) => {
+                let _ = tx.send(value);
+            }
+            #[cfg(feature = "async")]
+            CallbackSender::Async(ref mut tx) => {
+                if let Some(tx) = tx.take() {
+                    let _ = tx.send(value);
+                }
+            }
+        }
     }
 }
