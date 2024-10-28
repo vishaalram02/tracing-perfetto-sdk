@@ -62,6 +62,7 @@ pub mod ffi {
         /// `log_callback` parameters are `level, line, filename, message`.
         fn perfetto_global_init(
             log_callback: fn(LogLev, i32, &str, &str),
+            enable_in_process_backend: bool,
             enable_system_backend: bool,
         );
 

@@ -27,7 +27,8 @@ pub struct Builder<'c, W> {
     config_bytes: borrow::Cow<'c, [u8]>,
     writer: W,
     force_flavor: Option<flavor::Flavor>,
-    enable_traced_daemon: bool,
+    enable_in_process: bool,
+    enable_system: bool,
 }
 
 struct ThreadLocalCtx {
@@ -63,7 +64,7 @@ where
 
     fn build(builder: Builder<'_, W>) -> error::Result<Self> {
         // Shared global initialization for all layers
-        init::global_init(builder.enable_traced_daemon);
+        init::global_init(builder.enable_in_process, builder.enable_system);
 
         // We send the config to the C++ code as encoded bytes, because it would be too
         // annoying to have some sort of shared proto struct between the Rust
@@ -504,7 +505,8 @@ where
             config_bytes,
             writer,
             force_flavor: None,
-            enable_traced_daemon: false,
+            enable_in_process: true,
+            enable_system: false,
         }
     }
 
@@ -513,8 +515,13 @@ where
         self
     }
 
-    pub fn with_enable_traced_daemon(mut self, enable_traced_daemon: bool) -> Self {
-        self.enable_traced_daemon = enable_traced_daemon;
+    pub fn with_enable_in_process(mut self, enable_in_process: bool) -> Self {
+        self.enable_in_process = enable_in_process;
+        self
+    }
+
+    pub fn with_enable_system(mut self, enable_system: bool) -> Self {
+        self.enable_system = enable_system;
         self
     }
 

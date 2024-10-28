@@ -29,10 +29,13 @@ static void _log_callback_wrapper(perfetto::LogMessageCallbackArgs args) {
 }
 
 void perfetto_global_init(LogCallback log_callback,
+                          bool enable_in_process_backend,
                           bool enable_system_backend) {
   perfetto::TracingInitArgs args;
 
-  args.backends |= perfetto::kInProcessBackend;
+  if (enable_in_process_backend) {
+    args.backends |= perfetto::kInProcessBackend;
+  }
   if (enable_system_backend) {
     args.backends |= perfetto::kSystemBackend;
   }

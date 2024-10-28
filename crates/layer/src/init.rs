@@ -1,7 +1,11 @@
 use tracing_perfetto_sdk_sys::ffi;
 
-pub fn global_init(enable_system_backend: bool) {
-    ffi::perfetto_global_init(log_callback, enable_system_backend);
+pub fn global_init(enable_in_process_backend: bool, enable_system_backend: bool) {
+    ffi::perfetto_global_init(
+        log_callback,
+        enable_in_process_backend,
+        enable_system_backend,
+    );
 }
 
 fn log_callback(level: ffi::LogLev, line: i32, filename: &str, message: &str) {

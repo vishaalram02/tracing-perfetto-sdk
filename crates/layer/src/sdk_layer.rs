@@ -22,7 +22,8 @@ pub struct SdkLayer {
 pub struct Builder<'c> {
     config_bytes: borrow::Cow<'c, [u8]>,
     output_file: Option<fs::File>,
-    enable_traced_daemon: bool,
+    enable_in_process: bool,
+    enable_system: bool,
 }
 
 struct ThreadLocalCtx {
@@ -59,7 +60,7 @@ impl SdkLayer {
         use std::os::fd::AsRawFd as _;
 
         // Shared global initialization for all layers
-        init::global_init(builder.enable_traced_daemon);
+        init::global_init(builder.enable_in_process, builder.enable_system);
 
         let fd = builder
             .output_file
@@ -348,12 +349,18 @@ impl<'c> Builder<'c> {
         Self {
             config_bytes,
             output_file,
-            enable_traced_daemon: false,
+            enable_in_process: true,
+            enable_system: false,
         }
     }
 
-    pub fn with_enable_traced_daemon(mut self, enable_traced_daemon: bool) -> Self {
-        self.enable_traced_daemon = enable_traced_daemon;
+    pub fn with_enable_in_process(mut self, enable_in_process: bool) -> Self {
+        self.enable_in_process = enable_in_process;
+        self
+    }
+
+    pub fn with_enable_system(mut self, enable_system: bool) -> Self {
+        self.enable_system = enable_system;
         self
     }
 

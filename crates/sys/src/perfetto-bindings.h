@@ -15,7 +15,9 @@ using PollTracesCallback =
     rust::Fn<void(rust::Box<PollTracesCtx> ctx, rust::Slice<const uint8_t> data,
                   bool has_more)>;
 
-void perfetto_global_init(LogCallback log_callback, bool enable_system_backend);
+void perfetto_global_init(LogCallback log_callback,
+                          bool enable_in_process_backend,
+                          bool enable_system_backend);
 
 struct PerfettoTracingSession {
 public:
