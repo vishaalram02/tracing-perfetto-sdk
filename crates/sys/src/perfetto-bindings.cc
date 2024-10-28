@@ -75,12 +75,16 @@ void PerfettoTracingSession::flush(uint32_t timeout_ms, rust::Box<FlushCtx> ctx,
   // so we need something copyable that we can move out of
   std::shared_ptr<rust::Box<FlushCtx>> shared_ctx =
       std::make_shared<rust::Box<FlushCtx>>(std::move(ctx));
-  this->raw_session->Flush([=](bool success) {
-    rust::Box<FlushCtx> ctx = std::move(*shared_ctx);
-    if (shared_ctx) {
-      done(std::move(ctx), success);
-    }
-  }, timeout_ms);
+
+  this->raw_session->Flush(
+      [shared_ctx = std::move(shared_ctx), done](bool success) mutable {
+        auto ptr = shared_ctx->into_raw();
+        if (ptr) {
+          rust::Box<FlushCtx> ctx = rust::Box<FlushCtx>::from_raw(ptr);
+          done(std::move(ctx), success);
+        }
+      },
+      timeout_ms);
 }
 
 void PerfettoTracingSession::poll_traces(rust::Box<PollTracesCtx> ctx,
@@ -92,9 +96,11 @@ void PerfettoTracingSession::poll_traces(rust::Box<PollTracesCtx> ctx,
       std::make_shared<rust::Box<PollTracesCtx>>(std::move(ctx));
 
   this->raw_session->ReadTrace(
-      [=](perfetto::TracingSession::ReadTraceCallbackArgs args) {
-        if (shared_ctx) {
-          rust::Box<PollTracesCtx> ctx = std::move(*shared_ctx);
+      [=](perfetto::TracingSession::ReadTraceCallbackArgs args) mutable {
+        auto ptr = shared_ctx->into_raw();
+        if (ptr) {
+          rust::Box<PollTracesCtx> ctx =
+              rust::Box<PollTracesCtx>::from_raw(ptr);
           if (args.data && args.size) {
             auto data_ptr = reinterpret_cast<const uint8_t *>(args.data);
             rust::Slice<const uint8_t> data{data_ptr, args.size};
