@@ -612,6 +612,7 @@ fn background_poller_thread<W>(
                         ?error,
                         "background trace poll operation failed; will terminate"
                     );
+                    break;
                 }
             },
         }
