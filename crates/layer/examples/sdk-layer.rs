@@ -25,7 +25,7 @@ fn main() -> anyhow::Result<()> {
     use prost::Message as _;
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    let out_file = "native-layer-example.pftrace";
+    let out_file = "sdk-layer-example.pftrace";
     let layer = tracing_perfetto_sdk_layer::SdkLayer::from_config(
         trace_config(),
         Some(fs::File::create(out_file)?),
