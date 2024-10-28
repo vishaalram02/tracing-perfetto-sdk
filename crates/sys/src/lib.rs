@@ -50,6 +50,7 @@ pub mod ffi {
         // Opaque type passed to C++ code to be sent back during callbacks; essentially
         // like `void *context` but type-safe
         type PollTracesCtx;
+        type FlushCtx;
     }
 
     unsafe extern "C++" {
@@ -58,10 +59,8 @@ pub mod ffi {
         /// Initialize the global tracing infrastructure.
         ///
         /// Must be called once before all other functions in this module.
-        ///
-        /// `log_callback` parameters are `level, line, filename, message`.
         fn perfetto_global_init(
-            log_callback: fn(LogLev, i32, &str, &str),
+            log_callback: fn(level: LogLev, line: i32, filename: &str, message: &str),
             enable_in_process_backend: bool,
             enable_system_backend: bool,
         );
@@ -171,7 +170,17 @@ pub mod ffi {
         fn stop(self: Pin<&mut PerfettoTracingSession>);
 
         /// Flush buffered traces.
-        fn flush(self: Pin<&mut PerfettoTracingSession>);
+        ///
+        /// The passed-in callback is called with `true` on success; `false`
+        /// indicates that some data source didn't ack before the
+        /// timeout, or because something else went wrong (e.g. tracing
+        /// system wasn't initialized).
+        fn flush(
+            self: Pin<&mut PerfettoTracingSession>,
+            timeout_ms: u32,
+            ctx: Box<FlushCtx>,
+            done: fn(ctx: Box<FlushCtx>, success: bool),
+        );
 
         /// Poll for new traces, and call the provided `done` callback with new
         /// trace records.
@@ -188,7 +197,7 @@ pub mod ffi {
         fn poll_traces(
             self: Pin<&mut PerfettoTracingSession>,
             ctx: Box<PollTracesCtx>,
-            done: fn(Box<PollTracesCtx>, data: &[u8], has_more: bool),
+            done: fn(ctx: Box<PollTracesCtx>, data: &[u8], has_more: bool),
         );
     }
 }
@@ -203,6 +212,14 @@ unsafe impl Sync for ffi::PerfettoTracingSession {}
 // well?
 pub struct PollTracesCtx {
     tx: mpsc::Sender<PolledTraces>,
+}
+
+/// A context that will be passed-in in a call to [`ffi::flush`] and later
+/// passed back in the `done` callback when the async operation has completed.
+// TODO: here we use synchronous channels, but maybe we can support async as
+// well?
+pub struct FlushCtx {
+    tx: mpsc::Sender<bool>,
 }
 
 /// Traces returned from `poll_traces`/the channel returned by
@@ -235,5 +252,31 @@ impl PollTracesCtx {
     pub fn callback(self: Box<Self>, data: &[u8], has_more: bool) {
         let data = bytes::BytesMut::from(data);
         let _ = self.tx.send(PolledTraces { data, has_more });
+    }
+}
+
+/// A context to be passed into `flush`.
+///
+/// Intended to be called like:
+///
+/// ```no_run
+/// # use std::pin::Pin;
+/// # use tracing_perfetto_sdk_sys::ffi::PerfettoTracingSession;
+/// # use tracing_perfetto_sdk_sys::FlushCtx;
+/// let session: Pin<&mut PerfettoTracingSession> = todo!();
+/// let (ctx, rx) = FlushCtx::new();
+/// let timeout_ms = 100;
+/// session.flush(timeout_ms, Box::new(ctx), FlushCtx::callback);
+/// let success: bool = rx.recv().unwrap();
+/// ```
+impl FlushCtx {
+    pub fn new() -> (Self, Receiver<bool>) {
+        let (tx, rx) = mpsc::channel();
+        (Self { tx }, rx)
+    }
+
+    #[allow(clippy::boxed_local)]
+    pub fn callback(self: Box<Self>, success: bool) {
+        let _ = self.tx.send(success);
     }
 }

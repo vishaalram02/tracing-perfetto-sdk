@@ -1,6 +1,6 @@
 //! The main tracing layer and related utils exposed by this crate.
 use std::sync::atomic;
-use std::{borrow, env, fs, process, sync, thread};
+use std::{borrow, env, fs, process, sync, thread, time};
 
 #[cfg(feature = "tokio")]
 use tokio::task;
@@ -9,7 +9,7 @@ use tracing_perfetto_sdk_schema as schema;
 use tracing_perfetto_sdk_sys::ffi;
 use tracing_subscriber::{layer, registry};
 
-use crate::{debug_annotations, error, flavor, ids, init};
+use crate::{debug_annotations, error, ffi_utils, flavor, ids, init};
 
 /// A layer to be used with `tracing-subscriber` that forwards collected spans
 /// to the Perfetto SDK via the C++ API.
@@ -22,6 +22,7 @@ pub struct SdkLayer {
 pub struct Builder<'c> {
     config_bytes: borrow::Cow<'c, [u8]>,
     output_file: Option<fs::File>,
+    drop_flush_timeout: time::Duration,
     enable_in_process: bool,
     enable_system: bool,
 }
@@ -34,6 +35,7 @@ struct Inner {
     // Mutex is only held during start and stop, never otherwise
     ffi_session: sync::Mutex<Option<cxx::UniquePtr<ffi::PerfettoTracingSession>>>,
     output_file: sync::Mutex<Option<fs::File>>,
+    drop_flush_timeout: time::Duration,
     process_track_uuid: ids::TrackUuid,
     process_descriptor_sent: atomic::AtomicBool,
     #[cfg(feature = "tokio")]
@@ -75,6 +77,7 @@ impl SdkLayer {
         let ffi_session = sync::Mutex::new(Some(ffi_session));
 
         let output_file = sync::Mutex::new(builder.output_file);
+        let drop_flush_timeout = builder.drop_flush_timeout;
 
         let process_track_uuid = ids::TrackUuid::for_process(process::id());
         let process_descriptor_sent = atomic::AtomicBool::new(false);
@@ -87,6 +90,7 @@ impl SdkLayer {
         let inner = sync::Arc::new(Inner {
             ffi_session,
             output_file,
+            drop_flush_timeout,
             process_track_uuid,
             process_descriptor_sent,
             #[cfg(feature = "tokio")]
@@ -179,8 +183,8 @@ impl SdkLayer {
         )
     }
 
-    pub fn flush(&self) -> error::Result<()> {
-        self.inner.flush()
+    pub fn flush(&self, timeout: time::Duration) -> error::Result<()> {
+        self.inner.flush(timeout)
     }
 
     pub fn stop(&self) -> error::Result<()> {
@@ -303,16 +307,10 @@ where
 }
 
 impl Inner {
-    fn flush(&self) -> error::Result<()> {
-        let mut ffi_session = self
-            .ffi_session
-            .lock()
-            .map_err(|_| error::Error::PoisonedMutex)?;
-        if let Some(ffi_session) = ffi_session.as_mut() {
-            ffi_session.pin_mut().flush();
-        }
-
-        Ok(())
+    fn flush(&self, timeout: time::Duration) -> error::Result<()> {
+        ffi_utils::with_session_lock(&self.ffi_session, |session| {
+            ffi_utils::do_flush(session, timeout)
+        })
     }
 
     fn stop(&self) -> error::Result<()> {
@@ -340,6 +338,7 @@ impl Inner {
 
 impl Drop for Inner {
     fn drop(&mut self) {
+        let _ = self.flush(self.drop_flush_timeout);
         let _ = self.stop();
     }
 }
@@ -349,9 +348,15 @@ impl<'c> Builder<'c> {
         Self {
             config_bytes,
             output_file,
+            drop_flush_timeout: time::Duration::from_millis(100),
             enable_in_process: true,
             enable_system: false,
         }
+    }
+
+    pub fn with_drop_flush_timeout(mut self, drop_flush_timeout: time::Duration) -> Self {
+        self.drop_flush_timeout = drop_flush_timeout;
+        self
     }
 
     pub fn with_enable_in_process(mut self, enable_in_process: bool) -> Self {

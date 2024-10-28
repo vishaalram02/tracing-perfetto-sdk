@@ -8,11 +8,10 @@ use tokio::task;
 use tracing::span;
 use tracing_perfetto_sdk_schema as schema;
 use tracing_perfetto_sdk_schema::{trace_packet, track_descriptor, track_event};
-use tracing_perfetto_sdk_sys as sys;
 use tracing_perfetto_sdk_sys::ffi;
 use tracing_subscriber::{fmt, layer, registry};
 
-use crate::{debug_annotations, error, flavor, ids, init};
+use crate::{debug_annotations, error, ffi_utils, flavor, ids, init};
 
 /// A layer to be used with `tracing-subscriber` that natively writes the
 /// Perfetto trace packets in Rust code, but also polls the Perfetto SDK for
@@ -26,6 +25,10 @@ pub struct NativeLayer<W> {
 pub struct Builder<'c, W> {
     config_bytes: borrow::Cow<'c, [u8]>,
     writer: W,
+    drop_flush_timeout: time::Duration,
+    background_flush_timeout: time::Duration,
+    background_poll_timeout: time::Duration,
+    background_poll_interval: time::Duration,
     force_flavor: Option<flavor::Flavor>,
     enable_in_process: bool,
     enable_system: bool,
@@ -39,6 +42,7 @@ struct Inner<W> {
     // Mutex is held during start and stop, and by the background thread polling for events
     ffi_session: sync::Arc<sync::Mutex<Option<cxx::UniquePtr<ffi::PerfettoTracingSession>>>>,
     writer: sync::Arc<W>,
+    drop_flush_timeout: time::Duration,
     force_flavor: Option<flavor::Flavor>,
     process_track_uuid: ids::TrackUuid,
     process_descriptor_sent: atomic::AtomicBool,
@@ -75,29 +79,23 @@ where
 
         let writer = sync::Arc::new(builder.writer);
 
+        let drop_flush_timeout = builder.drop_flush_timeout;
+
         let thread_ffi_session = sync::Arc::clone(&ffi_session);
         let thread_writer = sync::Arc::clone(&writer);
+
         thread::Builder::new()
             .name("tracing-perfetto-poller".to_owned())
             .spawn(move || {
-                use std::io::Write as _;
-                loop {
-                    match poll_traces_once(thread_ffi_session.clone()) {
-                        Ok(Some(data)) => {
-                            let _ = thread_writer.make_writer().write_all(&*data.data);
-                        }
-                        Ok(None) => break,
-                        Err(error) => {
-                            tracing::warn!(
-                                ?error,
-                                "Perfetto SDK background thread died due to error"
-                            );
-                            break;
-                        }
-                    }
-                    thread::sleep(time::Duration::from_millis(100));
-                }
+                background_poller_thread(
+                    thread_ffi_session,
+                    thread_writer,
+                    builder.background_flush_timeout,
+                    builder.background_poll_timeout,
+                    builder.background_poll_interval,
+                )
             })?;
+
         let force_flavor = builder.force_flavor;
         let pid = process::id();
         let process_track_uuid = ids::TrackUuid::for_process(pid);
@@ -111,6 +109,7 @@ where
         let inner = sync::Arc::new(Inner {
             ffi_session,
             writer,
+            drop_flush_timeout,
             force_flavor,
             process_track_uuid,
             process_descriptor_sent,
@@ -172,8 +171,8 @@ where
         }
     }
 
-    pub fn flush(&self) -> error::Result<()> {
-        self.inner.flush()
+    pub fn flush(&self, timeout: time::Duration) -> error::Result<()> {
+        self.inner.flush(timeout)
     }
 
     pub fn stop(&self) -> error::Result<()> {
@@ -504,6 +503,10 @@ where
         Self {
             config_bytes,
             writer,
+            drop_flush_timeout: time::Duration::from_millis(100),
+            background_flush_timeout: time::Duration::from_millis(100),
+            background_poll_timeout: time::Duration::from_millis(100),
+            background_poll_interval: time::Duration::from_millis(100),
             force_flavor: None,
             enable_in_process: true,
             enable_system: false,
@@ -525,40 +528,94 @@ where
         self
     }
 
+    pub fn with_drop_flush_timeout(mut self, drop_flush_timeout: time::Duration) -> Self {
+        self.drop_flush_timeout = drop_flush_timeout;
+        self
+    }
+
+    pub fn with_background_flush_timeout(mut self, background_flush_timeout: time::Duration) -> Self {
+        self.background_flush_timeout = background_flush_timeout;
+        self
+    }
+
+    pub fn with_background_poll_timeout(mut self, background_poll_timeout: time::Duration) -> Self {
+        self.background_poll_timeout = background_poll_timeout;
+        self
+    }
+
+    pub fn with_background_poll_interval(mut self, background_poll_interval: time::Duration) -> Self {
+        self.background_poll_interval = background_poll_interval;
+        self
+    }
+
     pub fn build(self) -> error::Result<NativeLayer<W>> {
         NativeLayer::build(self)
     }
 }
 
 impl<W> Inner<W> {
-    fn flush(&self) -> error::Result<()> {
-        let mut ffi_session = self
-            .ffi_session
-            .lock()
-            .map_err(|_| error::Error::PoisonedMutex)?;
-        if let Some(ffi_session) = ffi_session.as_mut() {
-            ffi_session.pin_mut().flush();
-        }
-
-        Ok(())
+    fn flush(&self, timeout: time::Duration) -> error::Result<()> {
+        ffi_utils::with_session_lock(&*self.ffi_session, |session| {
+            ffi_utils::do_flush(session, timeout)
+        })
     }
 
     fn stop(&self) -> error::Result<()> {
-        let mut ffi_session = self
-            .ffi_session
-            .lock()
-            .map_err(|_| error::Error::PoisonedMutex)?;
-        if let Some(mut ffi_session) = ffi_session.take() {
-            ffi_session.pin_mut().stop();
-        }
-
-        Ok(())
+        ffi_utils::with_session_lock(&*self.ffi_session, |session| {
+            session.pin_mut().stop();
+            Ok(())
+        })
     }
 }
 
 impl<W> Drop for Inner<W> {
     fn drop(&mut self) {
+        let _ = self.flush(self.drop_flush_timeout);
         let _ = self.stop();
+    }
+}
+
+fn background_poller_thread<W>(
+    ffi_session: sync::Arc<sync::Mutex<Option<cxx::UniquePtr<ffi::PerfettoTracingSession>>>>,
+    writer: sync::Arc<W>,
+    background_flush_timeout: time::Duration,
+    background_poll_timeout: time::Duration,
+    background_poll_interval: time::Duration,
+) where
+    W: for<'w> fmt::MakeWriter<'w> + 'static,
+{
+    use std::io::Write as _;
+
+    loop {
+        let poll_result = ffi_utils::with_session_lock(&*ffi_session, |session| {
+            // TODO: consider making timeouts configurable
+            ffi_utils::do_flush(session, background_flush_timeout)?;
+            let data = ffi_utils::do_poll_traces(session, background_poll_timeout)?;
+            Ok(data)
+        });
+
+        match poll_result {
+            Ok(data) => {
+                let _ = writer.make_writer().write_all(&*data.data);
+            }
+            Err(error) => match error {
+                error::Error::TimedOut => {
+                    tracing::warn!(
+                        "background trace poll operation timed out; will ignore and continue"
+                    );
+                }
+                error::Error::LayerStopped => {
+                    break;
+                }
+                error => {
+                    tracing::error!(
+                        ?error,
+                        "background trace poll operation failed; will terminate"
+                    );
+                }
+            },
+        }
+        thread::sleep(background_poll_interval);
     }
 }
 
@@ -570,20 +627,4 @@ fn source_location_field(meta: &tracing::Metadata) -> Option<track_event::Source
             ..Default::default()
         },
     ))
-}
-
-fn poll_traces_once(
-    ffi_session: sync::Arc<sync::Mutex<Option<cxx::UniquePtr<ffi::PerfettoTracingSession>>>>,
-) -> error::Result<Option<sys::PolledTraces>> {
-    let mut mutex_guard = ffi_session
-        .lock()
-        .map_err(|_| error::Error::PoisonedMutex)?;
-    let Some(session) = mutex_guard.as_mut() else {
-        return Ok(None);
-    };
-    let (ctx, rx) = sys::PollTracesCtx::new();
-    session
-        .pin_mut()
-        .poll_traces(Box::new(ctx), sys::PollTracesCtx::callback);
-    Ok(rx.recv().ok())
 }

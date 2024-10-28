@@ -65,12 +65,21 @@ void PerfettoTracingSession::start() noexcept {
 }
 
 void PerfettoTracingSession::stop() noexcept {
-  this->flush();
   this->raw_session->StopBlocking();
 }
 
-void PerfettoTracingSession::flush() noexcept {
-  this->raw_session->FlushBlocking();
+void PerfettoTracingSession::flush(uint32_t timeout_ms, rust::Box<FlushCtx> ctx,
+                                   FlushCallback done) noexcept {
+  // Need to make a shared_ptr here because even though we know the
+  // lambda passed to ReadTrace will only be called once, the compiler does not,
+  // so we need something copyable that we can move out of
+  std::shared_ptr<rust::Box<FlushCtx>> shared_ctx =
+      std::make_shared<rust::Box<FlushCtx>>(std::move(ctx));
+  this->raw_session->Flush([=](bool success) {
+    if (shared_ctx) {
+      done(std::move(*shared_ctx), success);
+    }
+  }, timeout_ms);
 }
 
 void PerfettoTracingSession::poll_traces(rust::Box<PollTracesCtx> ctx,
@@ -84,14 +93,13 @@ void PerfettoTracingSession::poll_traces(rust::Box<PollTracesCtx> ctx,
   this->raw_session->ReadTrace(
       [=](perfetto::TracingSession::ReadTraceCallbackArgs args) {
         if (shared_ctx) {
-          auto ctx = std::move(*shared_ctx);
           if (args.data) {
             auto data_ptr = reinterpret_cast<const uint8_t *>(args.data);
             rust::Slice<const uint8_t> data{data_ptr, args.size};
-            done(std::move(ctx), data, args.has_more);
+            done(std::move(*shared_ctx), data, args.has_more);
           } else {
             rust::Slice<const uint8_t> data; // empty slice
-            done(std::move(ctx), data, args.has_more);
+            done(std::move(*shared_ctx), data, args.has_more);
           }
         }
       });

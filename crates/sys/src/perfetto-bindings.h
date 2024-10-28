@@ -15,6 +15,8 @@ using PollTracesCallback =
     rust::Fn<void(rust::Box<PollTracesCtx> ctx, rust::Slice<const uint8_t> data,
                   bool has_more)>;
 
+using FlushCallback = rust::Fn<void(rust::Box<FlushCtx> ctx, bool success)>;
+
 void perfetto_global_init(LogCallback log_callback,
                           bool enable_in_process_backend,
                           bool enable_system_backend);
@@ -26,7 +28,8 @@ public:
 
   void start() noexcept;
   void stop() noexcept;
-  void flush() noexcept;
+  void flush(uint32_t timeout_ms, rust::Box<FlushCtx> ctx,
+             FlushCallback done) noexcept;
   void poll_traces(rust::Box<PollTracesCtx> ctx,
                    PollTracesCallback done) noexcept;
 
