@@ -6,6 +6,10 @@ use tracing_perfetto_sdk_schema::trace_config;
 fn trace_config() -> schema::TraceConfig {
     // In a real app, one would read this from a config file or similar.
     schema::TraceConfig {
+        buffers: vec![trace_config::BufferConfig {
+            size_kb: Some(1024),
+            ..Default::default()
+        }],
         data_sources: vec![trace_config::DataSource {
             config: Some(schema::DataSourceConfig {
                 name: Some("rust_tracing".into()),
