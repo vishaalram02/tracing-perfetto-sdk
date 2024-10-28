@@ -533,7 +533,10 @@ where
         self
     }
 
-    pub fn with_background_flush_timeout(mut self, background_flush_timeout: time::Duration) -> Self {
+    pub fn with_background_flush_timeout(
+        mut self,
+        background_flush_timeout: time::Duration,
+    ) -> Self {
         self.background_flush_timeout = background_flush_timeout;
         self
     }
@@ -543,7 +546,10 @@ where
         self
     }
 
-    pub fn with_background_poll_interval(mut self, background_poll_interval: time::Duration) -> Self {
+    pub fn with_background_poll_interval(
+        mut self,
+        background_poll_interval: time::Duration,
+    ) -> Self {
         self.background_poll_interval = background_poll_interval;
         self
     }
@@ -561,10 +567,16 @@ impl<W> Inner<W> {
     }
 
     fn stop(&self) -> error::Result<()> {
-        ffi_utils::with_session_lock(&*self.ffi_session, |session| {
+        // Can't use ffi_utils::with_session_lock here because we want to take the
+        // session object
+        let mut session = self
+            .ffi_session
+            .lock()
+            .map_err(|_| error::Error::PoisonedMutex)?;
+        if let Some(mut session) = session.take() {
             session.pin_mut().stop();
-            Ok(())
-        })
+        }
+        Ok(())
     }
 }
 
