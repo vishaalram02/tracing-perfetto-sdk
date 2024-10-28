@@ -1,13 +1,7 @@
-use std::sync;
-
 use tracing_perfetto_sdk_sys::ffi;
 
-static INIT: sync::Once = sync::Once::new();
-
-pub fn global_init() {
-    INIT.call_once(|| {
-        ffi::perfetto_global_init(log_callback);
-    });
+pub fn global_init(enable_system_backend: bool) {
+    ffi::perfetto_global_init(log_callback, enable_system_backend);
 }
 
 fn log_callback(level: ffi::LogLev, line: i32, filename: &str, message: &str) {

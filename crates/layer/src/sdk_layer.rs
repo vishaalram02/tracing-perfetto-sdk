@@ -1,6 +1,6 @@
 //! The main tracing layer and related utils exposed by this crate.
 use std::sync::atomic;
-use std::{env, fs, process, sync, thread};
+use std::{borrow, env, fs, process, sync, thread};
 
 #[cfg(feature = "tokio")]
 use tokio::task;
@@ -17,6 +17,12 @@ use crate::{debug_annotations, error, flavor, ids, init};
 #[repr(transparent)]
 pub struct SdkLayer {
     inner: sync::Arc<Inner>,
+}
+
+pub struct Builder<'c> {
+    config_bytes: borrow::Cow<'c, [u8]>,
+    output_file: Option<fs::File>,
+    enable_traced_daemon: bool,
 }
 
 struct ThreadLocalCtx {
@@ -40,29 +46,34 @@ impl SdkLayer {
     pub fn from_config(
         config: schema::TraceConfig,
         output_file: Option<fs::File>,
-    ) -> error::Result<Self> {
+    ) -> Builder<'static> {
         use prost::Message as _;
-        Self::from_config_bytes(&config.encode_to_vec(), output_file)
+        Builder::new(config.encode_to_vec().into(), output_file)
     }
 
-    pub fn from_config_bytes(
-        config_bytes: &[u8],
-        output_file: Option<fs::File>,
-    ) -> error::Result<Self> {
+    pub fn from_config_bytes(config_bytes: &[u8], output_file: Option<fs::File>) -> Builder {
+        Builder::new(config_bytes.into(), output_file)
+    }
+
+    fn build(builder: Builder) -> error::Result<Self> {
         use std::os::fd::AsRawFd as _;
 
         // Shared global initialization for all layers
-        init::global_init();
+        init::global_init(builder.enable_traced_daemon);
 
-        let fd = output_file.as_ref().map(|f| f.as_raw_fd()).unwrap_or(-1);
+        let fd = builder
+            .output_file
+            .as_ref()
+            .map(|f| f.as_raw_fd())
+            .unwrap_or(-1);
         // We send the config to the C++ code as encoded bytes, because it would be too
         // annoying to have some sort of shared proto struct between the Rust
         // and C++ worlds
-        let mut ffi_session = ffi::new_tracing_session(config_bytes, fd)?;
+        let mut ffi_session = ffi::new_tracing_session(builder.config_bytes.as_ref(), fd)?;
         ffi_session.pin_mut().start();
         let ffi_session = sync::Mutex::new(Some(ffi_session));
 
-        let output_file = sync::Mutex::new(output_file);
+        let output_file = sync::Mutex::new(builder.output_file);
 
         let process_track_uuid = ids::TrackUuid::for_process(process::id());
         let process_descriptor_sent = atomic::AtomicBool::new(false);
@@ -329,5 +340,24 @@ impl Inner {
 impl Drop for Inner {
     fn drop(&mut self) {
         let _ = self.stop();
+    }
+}
+
+impl<'c> Builder<'c> {
+    fn new(config_bytes: borrow::Cow<'c, [u8]>, output_file: Option<fs::File>) -> Self {
+        Self {
+            config_bytes,
+            output_file,
+            enable_traced_daemon: false,
+        }
+    }
+
+    pub fn with_enable_traced_daemon(mut self, enable_traced_daemon: bool) -> Self {
+        self.enable_traced_daemon = enable_traced_daemon;
+        self
+    }
+
+    pub fn build(self) -> error::Result<SdkLayer> {
+        SdkLayer::build(self)
     }
 }

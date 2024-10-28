@@ -1,6 +1,6 @@
 //! The main tracing layer and related utils exposed by this crate.
 use std::sync::atomic;
-use std::{env, process, sync, thread, time};
+use std::{borrow, env, process, sync, thread, time};
 
 use prost::encoding;
 #[cfg(feature = "tokio")]
@@ -21,6 +21,13 @@ use crate::{debug_annotations, error, flavor, ids, init};
 #[repr(transparent)]
 pub struct NativeLayer<W> {
     inner: sync::Arc<Inner<W>>,
+}
+
+pub struct Builder<'c, W> {
+    config_bytes: borrow::Cow<'c, [u8]>,
+    writer: W,
+    force_flavor: Option<flavor::Flavor>,
+    enable_traced_daemon: bool,
 }
 
 struct ThreadLocalCtx {
@@ -45,31 +52,27 @@ impl<W> NativeLayer<W>
 where
     W: for<'w> fmt::MakeWriter<'w> + Send + Sync + 'static,
 {
-    pub fn from_config(
-        config: schema::TraceConfig,
-        writer: W,
-        force_flavor: Option<flavor::Flavor>,
-    ) -> error::Result<Self> {
+    pub fn from_config(config: schema::TraceConfig, writer: W) -> Builder<'static, W> {
         use prost::Message as _;
-        Self::from_config_bytes(&config.encode_to_vec(), writer, force_flavor)
+        Builder::new(config.encode_to_vec().into(), writer)
     }
 
-    pub fn from_config_bytes(
-        config_bytes: &[u8],
-        writer: W,
-        force_flavor: Option<flavor::Flavor>,
-    ) -> error::Result<Self> {
+    pub fn from_config_bytes(config_bytes: &[u8], writer: W) -> Builder<W> {
+        Builder::new(config_bytes.into(), writer)
+    }
+
+    fn build(builder: Builder<'_, W>) -> error::Result<Self> {
         // Shared global initialization for all layers
-        init::global_init();
+        init::global_init(builder.enable_traced_daemon);
 
         // We send the config to the C++ code as encoded bytes, because it would be too
         // annoying to have some sort of shared proto struct between the Rust
         // and C++ worlds
-        let mut ffi_session = ffi::new_tracing_session(config_bytes, -1)?;
+        let mut ffi_session = ffi::new_tracing_session(builder.config_bytes.as_ref(), -1)?;
         ffi_session.pin_mut().start();
         let ffi_session = sync::Arc::new(sync::Mutex::new(Some(ffi_session)));
 
-        let writer = sync::Arc::new(writer);
+        let writer = sync::Arc::new(builder.writer);
 
         let thread_ffi_session = sync::Arc::clone(&ffi_session);
         let thread_writer = sync::Arc::clone(&writer);
@@ -94,7 +97,7 @@ where
                     thread::sleep(time::Duration::from_millis(100));
                 }
             })?;
-
+        let force_flavor = builder.force_flavor;
         let pid = process::id();
         let process_track_uuid = ids::TrackUuid::for_process(pid);
         let process_descriptor_sent = atomic::AtomicBool::new(false);
@@ -489,6 +492,34 @@ where
         if flavor == flavor::Flavor::Async {
             self.slice_end(meta, track_uuid, sequence_id, extensions);
         }
+    }
+}
+
+impl<'c, W> Builder<'c, W>
+where
+    W: for<'w> fmt::MakeWriter<'w> + Send + Sync + 'static,
+{
+    fn new(config_bytes: borrow::Cow<'c, [u8]>, writer: W) -> Self {
+        Self {
+            config_bytes,
+            writer,
+            force_flavor: None,
+            enable_traced_daemon: false,
+        }
+    }
+
+    pub fn with_force_flavor(mut self, force_flavor: Option<flavor::Flavor>) -> Self {
+        self.force_flavor = force_flavor;
+        self
+    }
+
+    pub fn with_enable_traced_daemon(mut self, enable_traced_daemon: bool) -> Self {
+        self.enable_traced_daemon = enable_traced_daemon;
+        self
+    }
+
+    pub fn build(self) -> error::Result<NativeLayer<W>> {
+        NativeLayer::build(self)
     }
 }
 

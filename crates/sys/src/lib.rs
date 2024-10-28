@@ -60,7 +60,10 @@ pub mod ffi {
         /// Must be called once before all other functions in this module.
         ///
         /// `log_callback` parameters are `level, line, filename, message`.
-        fn perfetto_global_init(log_callback: fn(LogLev, i32, &str, &str));
+        fn perfetto_global_init(
+            log_callback: fn(LogLev, i32, &str, &str),
+            enable_system_backend: bool,
+        );
 
         /// The native C++ class that is safe to be passed across the C++/Rust
         /// boundary via a `unique_ptr`.

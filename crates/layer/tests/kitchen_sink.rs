@@ -1,7 +1,6 @@
 #![cfg(feature = "tokio")]
 use std::{env, fs, thread};
 
-use futures::future;
 use schema::trace_packet;
 use tokio::{runtime, time};
 use tracing::{info, span};
@@ -45,7 +44,7 @@ data_sources:
 "#,
     )?;
     let (nb, guard) = tracing_appender::non_blocking(file);
-    let perfetto_layer = layer::NativeLayer::from_config(config, nb, None)?;
+    let perfetto_layer = layer::NativeLayer::from_config(config, nb).build()?;
 
     let fmt_layer = fmt::layer()
         .with_writer(std::io::stdout)
