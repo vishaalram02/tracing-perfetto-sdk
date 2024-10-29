@@ -163,7 +163,10 @@ data_sources:
         })
         .expect("to find a track event for a counter value");
 
-    assert_eq!(counter_value_event, &track_event::CounterValueField::CounterValue(42));
+    assert_eq!(
+        counter_value_event,
+        &track_event::CounterValueField::CounterValue(42)
+    );
 
     Ok(())
 }
