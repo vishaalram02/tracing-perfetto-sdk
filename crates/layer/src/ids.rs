@@ -15,6 +15,7 @@ const THREAD_NS: u32 = 2;
 const TOKIO_NS: u32 = 3;
 #[cfg(feature = "tokio")]
 const TASK_NS: u32 = 4;
+const COUNTER_NS: u32 = 5;
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
@@ -41,6 +42,12 @@ impl TrackUuid {
     pub fn for_tokio() -> TrackUuid {
         let mut h = hash::DefaultHasher::new();
         (TRACK_UUID_NS, TOKIO_NS).hash(&mut h);
+        TrackUuid(h.finish())
+    }
+
+    pub fn for_counter(counter_name: &str) -> TrackUuid {
+        let mut h = hash::DefaultHasher::new();
+        (TRACK_UUID_NS, COUNTER_NS, counter_name).hash(&mut h);
         TrackUuid(h.finish())
     }
 

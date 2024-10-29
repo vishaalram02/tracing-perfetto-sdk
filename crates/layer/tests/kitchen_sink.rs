@@ -6,6 +6,7 @@ use tokio::{runtime, time};
 use tracing::{info, span};
 use tracing_perfetto_sdk_layer as layer;
 use tracing_perfetto_sdk_schema as schema;
+use tracing_perfetto_sdk_schema::{track_descriptor, track_event};
 use tracing_subscriber::fmt;
 use tracing_subscriber::fmt::format;
 
@@ -61,7 +62,7 @@ data_sources:
     let demo_span = span!(tracing::Level::TRACE, "demo_span");
     let enter = demo_span.enter();
 
-    info!("in span");
+    info!(counter.foo_counter.ms = 42, "in span");
     sync_fn(1);
     sync_fn(2);
     let handle = runtime::Handle::current();
@@ -133,12 +134,61 @@ data_sources:
 
     assert_eq!(process_td.uuid, tokio_td.parent_uuid);
 
+    let counter_td = trace
+        .packet
+        .iter()
+        .find_map(|p| {
+            let td = as_track_descriptor(p)?;
+            if td_name(td) == "foo_counter" && td.counter.is_some() {
+                Some(td)
+            } else {
+                None
+            }
+        })
+        .expect("to find a track descriptor for the foo_counter counter");
+
+    let counter_def = counter_td.counter.as_ref().unwrap();
+    assert_eq!(counter_def.unit_name.as_ref().unwrap(), "ms");
+
+    let counter_value_event = trace
+        .packet
+        .iter()
+        .find_map(|p| {
+            let te = as_track_event(p)?;
+            if let Some(ref counter_value) = te.counter_value_field {
+                Some(counter_value)
+            } else {
+                None
+            }
+        })
+        .expect("to find a track event for a counter value");
+
+    assert_eq!(
+        counter_value_event,
+        &track_event::CounterValueField::CounterValue(42)
+    );
+
     Ok(())
+}
+
+fn td_name(track_descriptor: &schema::TrackDescriptor) -> &str {
+    match track_descriptor.static_or_dynamic_name {
+        Some(track_descriptor::StaticOrDynamicName::Name(ref str)) => str,
+        Some(track_descriptor::StaticOrDynamicName::StaticName(ref str)) => str,
+        None => "",
+    }
 }
 
 fn as_track_descriptor(packet: &schema::TracePacket) -> Option<&schema::TrackDescriptor> {
     match packet.data {
         Some(trace_packet::Data::TrackDescriptor(ref td)) => Some(td),
+        _ => None,
+    }
+}
+
+fn as_track_event(packet: &schema::TracePacket) -> Option<&schema::TrackEvent> {
+    match packet.data {
+        Some(trace_packet::Data::TrackEvent(ref te)) => Some(te),
         _ => None,
     }
 }
