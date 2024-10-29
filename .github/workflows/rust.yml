@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+    - name: Install Protoc
+      uses: arduino/setup-protoc@v3
     - name: Build
       run: cargo build --all
     - name: Run tests
@@ -22,6 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+    - name: Install Protoc
+      uses: arduino/setup-protoc@v3
     - name: Build
       run: cargo build --all --features=tokio
     - name: Run tests
