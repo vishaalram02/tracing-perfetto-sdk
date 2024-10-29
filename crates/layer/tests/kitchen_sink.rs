@@ -6,7 +6,7 @@ use tokio::{runtime, time};
 use tracing::{info, span};
 use tracing_perfetto_sdk_layer as layer;
 use tracing_perfetto_sdk_schema as schema;
-use tracing_perfetto_sdk_schema::track_descriptor;
+use tracing_perfetto_sdk_schema::{track_descriptor, track_event};
 use tracing_subscriber::fmt;
 use tracing_subscriber::fmt::format;
 
@@ -150,6 +150,21 @@ data_sources:
     let counter_def = counter_td.counter.as_ref().unwrap();
     assert_eq!(counter_def.unit_name.as_ref().unwrap(), "ms");
 
+    let counter_value_event = trace
+        .packet
+        .iter()
+        .find_map(|p| {
+            let te = as_track_event(p)?;
+            if let Some(ref counter_value) = te.counter_value_field {
+                Some(counter_value)
+            } else {
+                None
+            }
+        })
+        .expect("to find a track event for a counter value");
+
+    assert_eq!(counter_value_event, &track_event::CounterValueField::CounterValue(42));
+
     Ok(())
 }
 
@@ -164,6 +179,13 @@ fn td_name(track_descriptor: &schema::TrackDescriptor) -> &str {
 fn as_track_descriptor(packet: &schema::TracePacket) -> Option<&schema::TrackDescriptor> {
     match packet.data {
         Some(trace_packet::Data::TrackDescriptor(ref td)) => Some(td),
+        _ => None,
+    }
+}
+
+fn as_track_event(packet: &schema::TracePacket) -> Option<&schema::TrackEvent> {
+    match packet.data {
+        Some(trace_packet::Data::TrackEvent(ref te)) => Some(te),
         _ => None,
     }
 }
