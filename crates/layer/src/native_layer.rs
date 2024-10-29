@@ -7,7 +7,9 @@ use prost::encoding;
 use tokio::task;
 use tracing::span;
 use tracing_perfetto_sdk_schema as schema;
-use tracing_perfetto_sdk_schema::{trace_packet, track_descriptor, track_event};
+use tracing_perfetto_sdk_schema::{
+    counter_descriptor, trace_packet, track_descriptor, track_event,
+};
 use tracing_perfetto_sdk_sys::ffi;
 use tracing_subscriber::{fmt, layer, registry};
 
@@ -46,6 +48,12 @@ struct Inner<W> {
     force_flavor: Option<flavor::Flavor>,
     process_track_uuid: ids::TrackUuid,
     process_descriptor_sent: atomic::AtomicBool,
+    // Mutex is held very briefly for member check and to insert a string if it is missing.
+    // We probably don't need a fancy data structure like `HashSet` or similar because this is
+    // expected to contain a small (<20 entries) set of short (<20 chars) strings, and they are
+    // all static (meaning high CPU cache coherence), so a linear scan + equals check is probably
+    // faster than hashing strings etc.
+    counters_sent: sync::Mutex<Vec<&'static str>>,
     #[cfg(feature = "tokio")]
     tokio_descriptor_sent: atomic::AtomicBool,
     #[cfg(feature = "tokio")]
@@ -100,6 +108,7 @@ where
         let pid = process::id();
         let process_track_uuid = ids::TrackUuid::for_process(pid);
         let process_descriptor_sent = atomic::AtomicBool::new(false);
+        let counters_sent = sync::Mutex::new(Vec::new());
         #[cfg(feature = "tokio")]
         let tokio_descriptor_sent = atomic::AtomicBool::new(false);
         #[cfg(feature = "tokio")]
@@ -113,6 +122,7 @@ where
             force_flavor,
             process_track_uuid,
             process_descriptor_sent,
+            counters_sent,
             #[cfg(feature = "tokio")]
             tokio_descriptor_sent,
             #[cfg(feature = "tokio")]
@@ -294,6 +304,112 @@ where
         }
     }
 
+    fn report_counters(&self, meta: &tracing::Metadata, counters: Vec<debug_annotations::Counter>) {
+        if !counters.is_empty() {
+            self.ensure_counters_known(meta, &counters);
+            for counter in counters {
+                self.write_counter_event(meta, counter);
+            }
+        }
+    }
+
+    fn ensure_counters_known(
+        &self,
+        meta: &tracing::Metadata,
+        counters: &[debug_annotations::Counter],
+    ) {
+        // This might seem wasteful, but we want to minimize the time that we hold the
+        // `counters_sent` mutex, and we can report the counters after we have released
+        // the lock.  Also remember that `Vec::new()` does not allocate until the first
+        // push!
+        let mut new_counters = Vec::new();
+
+        // Skip counters entirely if Mutex is poisoned -- can't afford to panic here
+        if let Ok(mut counters_sent) = self.inner.counters_sent.lock() {
+            for counter in counters {
+                if !counters_sent.contains(&counter.name) {
+                    new_counters.push(counter);
+                    counters_sent.push(counter.name);
+                }
+            }
+        }
+
+        for counter in new_counters {
+            self.write_counter_track_descriptor(meta, counter);
+        }
+    }
+
+    fn write_counter_track_descriptor(
+        &self,
+        meta: &tracing::Metadata,
+        counter: &debug_annotations::Counter,
+    ) {
+        let (unit, unit_name) = if let Some(unit) = counter.unit {
+            Self::pick_unit_repr(unit)
+        } else {
+            (None, None)
+        };
+
+        let packet = schema::TracePacket {
+            data: Some(trace_packet::Data::TrackDescriptor(
+                schema::TrackDescriptor {
+                    parent_uuid: Some(self.inner.process_track_uuid.as_raw()),
+                    uuid: Some(ids::TrackUuid::for_counter(counter.name).as_raw()),
+                    counter: Some(schema::CounterDescriptor {
+                        unit_name,
+                        unit,
+                        ..Default::default()
+                    }),
+                    static_or_dynamic_name: Some(track_descriptor::StaticOrDynamicName::Name(
+                        counter.name.to_owned(),
+                    )),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        };
+
+        self.write_packet(meta, packet);
+    }
+
+    fn write_counter_event(&self, meta: &tracing::Metadata, counter: debug_annotations::Counter) {
+        let packet = schema::TracePacket {
+            timestamp: Some(ffi::trace_time_ns()),
+            data: Some(trace_packet::Data::TrackEvent(schema::TrackEvent {
+                r#type: Some(track_event::Type::Counter as i32),
+                track_uuid: Some(ids::TrackUuid::for_counter(counter.name).as_raw()),
+                counter_value_field: Some(counter.value.to_proto()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        self.write_packet(meta, packet);
+    }
+
+    /// For a named unit, try to find an existing proto definition for that unit
+    /// and return as first return value, or else fall back to naming the unit
+    /// by name as the second return value.
+    fn pick_unit_repr(unit: &str) -> (Option<i32>, Option<String>) {
+        // If there's a defined unit in the proto schema, use that:
+        Self::parse_unit(unit)
+            .map(|u| (Some(u as i32), None))
+            .unwrap_or_else(|| {
+                // ...else, send the unit by name:
+                (None, Some(unit.to_owned()))
+            })
+    }
+
+    /// For a named unit, try to find an existing proto definition for that
+    /// unit.
+    fn parse_unit(name: &str) -> Option<counter_descriptor::Unit> {
+        match name {
+            "time_ns" | "ns" | "nanos" | "nanoseconds" => Some(counter_descriptor::Unit::TimeNs),
+            "count" | "nr" => Some(counter_descriptor::Unit::Count),
+            "size_bytes" | "bytes" => Some(counter_descriptor::Unit::SizeBytes),
+            _ => None,
+        }
+    }
+
     fn write_packet(&self, meta: &tracing::Metadata, packet: schema::TracePacket) {
         // The field tag of `packet` within the `Trace` proto message.
         const PACKET_FIELD_TAG: u32 = 1;
@@ -392,14 +508,15 @@ where
 {
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: layer::Context<'_, S>) {
         let span = ctx.span(id).expect("span to be found (this is a bug)");
+        let meta = span.metadata();
 
         let (track_uuid, sequence_id, flavor) = self.pick_trace_track_sequence();
         span.extensions_mut().insert(track_uuid);
         span.extensions_mut().insert(sequence_id);
-        let meta = span.metadata();
 
         let mut debug_annotations = debug_annotations::ProtoDebugAnnotations::default();
         attrs.record(&mut debug_annotations);
+        self.report_counters(meta, debug_annotations.take_counters());
         span.extensions_mut().insert(debug_annotations.clone());
 
         if flavor == flavor::Flavor::Async {
@@ -409,12 +526,14 @@ where
 
     fn on_record(&self, id: &tracing::Id, values: &span::Record<'_>, ctx: layer::Context<'_, S>) {
         let span = ctx.span(id).expect("span to be found (this is a bug)");
+        let meta = span.metadata();
 
         let mut extensions = span.extensions_mut();
         if let Some(debug_annotations) =
             extensions.get_mut::<debug_annotations::ProtoDebugAnnotations>()
         {
             values.record(debug_annotations);
+            self.report_counters(meta, debug_annotations.take_counters());
         } else {
             let mut debug_annotations = debug_annotations::ProtoDebugAnnotations::default();
             values.record(&mut debug_annotations);
@@ -423,10 +542,11 @@ where
     }
 
     fn on_event(&self, event: &tracing::Event<'_>, _ctx: layer::Context<'_, S>) {
+        let meta = event.metadata();
         let mut debug_annotations = debug_annotations::ProtoDebugAnnotations::default();
         event.record(&mut debug_annotations);
+        self.report_counters(meta, debug_annotations.take_counters());
 
-        let meta = event.metadata();
         let (track_uuid, sequence_id, _) = self.pick_trace_track_sequence();
 
         let packet = schema::TracePacket {
