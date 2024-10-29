@@ -20,8 +20,8 @@
 //!
 //! let out_file = "native-layer-example.pftrace";
 //! let trace_config = todo!();
-//! let out_file = fs::File::create(out_file)?;
-//! let layer = NativeLayer::from_config(trace_config, out_file).build()?;
+//! let out_file = fs::File::create(out_file).unwrap();
+//! let layer = NativeLayer::from_config(trace_config, out_file).build().unwrap();
 //!
 //! let subscriber = tracing_subscriber::registry().with(layer);
 //!
