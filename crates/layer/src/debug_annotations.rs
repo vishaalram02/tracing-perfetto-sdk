@@ -48,10 +48,6 @@ impl FFIDebugAnnotations {
             doubles: self.doubles.as_slice(),
         }
     }
-
-    pub fn take_counters(&mut self) -> Vec<Counter> {
-        mem::take(&mut self.counters)
-    }
 }
 
 impl field::Visit for FFIDebugAnnotations {
