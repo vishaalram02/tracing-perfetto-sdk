@@ -24,6 +24,8 @@ pub struct NativeLayer<W> {
     inner: sync::Arc<Inner<W>>,
 }
 
+/// A builder for [`NativeLayer`]; use [`NativeLayer::from_config`] or
+/// [`NativeLayer::from_config_bytes`] to create a new instance.
 pub struct Builder<'c, W> {
     config_bytes: borrow::Cow<'c, [u8]>,
     writer: W,
@@ -65,11 +67,26 @@ impl<W> NativeLayer<W>
 where
     W: for<'w> fmt::MakeWriter<'w> + Send + Sync + 'static,
 {
+    /// Create a new layer builder from the supplied proto config.
+    ///
+    /// The proto config is usually read from an external source using the
+    /// prototext syntax, or else using one of the `serde` codecs.  The config
+    /// will internally be encoded to bytes straight away, so prefer
+    /// [`NativeLayer::from_config_bytes`] if you already have the byte
+    /// representation.
+    ///
+    /// The built layer will write traces to the supplied writer.
     pub fn from_config(config: schema::TraceConfig, writer: W) -> Builder<'static, W> {
         use prost::Message as _;
         Builder::new(config.encode_to_vec().into(), writer)
     }
 
+    /// Create a new layer builder from the supplied proto config bytes.
+    ///
+    /// The proto config bytes needs to be an already encoded message of type
+    /// [`schema::TraceConfig`].
+    ///
+    /// The built layer will write traces to the supplied writer.
     pub fn from_config_bytes(config_bytes: &[u8], writer: W) -> Builder<W> {
         Builder::new(config_bytes.into(), writer)
     }
@@ -181,10 +198,13 @@ where
         }
     }
 
+    /// Flush internal buffers, making the best effort for all pending writes to
+    /// be visible on this layer's `writer`.
     pub fn flush(&self, timeout: time::Duration) -> error::Result<()> {
         self.inner.flush(timeout)
     }
 
+    /// Stop the layer and stop collecting traces.
     pub fn stop(&self) -> error::Result<()> {
         self.inner.stop()
     }
@@ -633,26 +653,36 @@ where
         }
     }
 
+    /// If `Some`, force the specified trace flavor. If `None`, use heuristics
+    /// for every created span to determine the flavor.
     pub fn with_force_flavor(mut self, force_flavor: Option<flavor::Flavor>) -> Self {
         self.force_flavor = force_flavor;
         self
     }
 
+    /// Enable in-process collection, where traces will be collected by buffers
+    /// in the Perfetto SDK and spilled to file in-process.
     pub fn with_enable_in_process(mut self, enable_in_process: bool) -> Self {
         self.enable_in_process = enable_in_process;
         self
     }
 
+    /// Enable system collection, where traces will be sent/collected from the
+    /// `traced` daemon, and additional system-wide data sources (such as
+    /// `ftrace`, `procfs`, `sysfs`, etc.) can be collected too.
     pub fn with_enable_system(mut self, enable_system: bool) -> Self {
         self.enable_system = enable_system;
         self
     }
 
+    /// The timeout of the final flush that will happen when dropping this
+    /// layer.
     pub fn with_drop_flush_timeout(mut self, drop_flush_timeout: time::Duration) -> Self {
         self.drop_flush_timeout = drop_flush_timeout;
         self
     }
 
+    /// The timeout of each flush in the background trace polling thread.
     pub fn with_background_flush_timeout(
         mut self,
         background_flush_timeout: time::Duration,
@@ -661,11 +691,13 @@ where
         self
     }
 
+    /// The timeout of each poll in the background trace polling thread.
     pub fn with_background_poll_timeout(mut self, background_poll_timeout: time::Duration) -> Self {
         self.background_poll_timeout = background_poll_timeout;
         self
     }
 
+    /// The delay between each poll in the background trace polling thread.
     pub fn with_background_poll_interval(
         mut self,
         background_poll_interval: time::Duration,
@@ -674,6 +706,7 @@ where
         self
     }
 
+    /// Turn this builder into a built layer.
     pub fn build(self) -> error::Result<NativeLayer<W>> {
         NativeLayer::build(self)
     }

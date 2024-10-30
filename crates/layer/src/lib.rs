@@ -1,4 +1,5 @@
 #![deny(clippy::all)]
+#![deny(missing_docs)]
 //! # `tracing-perfetto-sdk-layer`
 //! A suite of tracing layers that reports traces via the C++ Perfetto SDK
 //!
@@ -35,6 +36,35 @@
 //! });
 //! ```
 //!
+//! ## Trace config
+//!
+//! The layer constructor expects a `TraceConfig` protobuf message to configure
+//! tracing settings. This can either be supplied as a `prost`-generated struct
+//! or as raw (protobuf-encoded) bytes. The raw bytes option might be useful if
+//! you want to embed a config with your binary that doesn't have to change, and
+//! you want to save on space/overhead/... In the end the config will
+//! always be encoded to bytes anyway to be sent to the C++ SDK.
+//!
+//! Since the protobuf schema also implements `serde` traits, you can load/store
+//! the config file in any format you like, as long as there is a `serde` codec
+//! for it.  To activate the `tracing` data source, you need to add at least the
+//! `rust_tracing` data source in the relevant config section (here, the config
+//! is in YAML format):
+//!
+//! ```yaml
+//! buffers:
+//!   - size_kb: 1024
+//! data_sources:
+//!   - config:
+//!       name: "rust_tracing"
+//! ```
+//!
+//! This is a good starting point for a minimal config file.  If you want to
+//! activate additional data sources, you can add them here; just remember that
+//! most of them rely on the `traced daemon running on the host, and requires
+//! you to use system mode (Explained further below in the section "Controlling
+//! output destinations").
+//!
 //! ## Using counters
 //!
 //! When logging trace events, such as when calling `tracing::info!()` and
@@ -54,6 +84,9 @@
 //! ```no_run
 //! tracing::info!(counter.mem_usage.bytes=42, counter.cpu_usage.percent=23.2, "hi!");
 //! ```
+//!
+//! The unit will be reported properly in the Perfetto UI at the track-level
+//! next to the sidebar of each line chart.
 //!
 //! **NOTE**: at the time of writing, counters are only implemented by the
 //! [`NativeLayer`].
@@ -99,6 +132,32 @@
 //! system's `traced` daemon, or (in the case of [`NativeLayer`]) poll for
 //! system-wide traces from the `traced` daemon and include them in the trace
 //! file.
+//!
+//! ## Sharing
+//!
+//! Layers are cloneable and will internally keep a reference count to keep the
+//! layer internals alive.  This means you can make a clone of the layer to
+//! control it from many places at once. For example, it can be useful to have a
+//! clone of the layer to be able to call `.flush()` or `.stop()` from somewhere
+//! else.
+//!
+//! ## Timeouts
+//!
+//! The layers allow you to configure various timeouts that will be used
+//! throughout the lifecycle of a layer. These are:
+//!
+//!   * `drop_flush_timeout`: When the layer is dropped: how long to wait for a
+//!     final flush to complete before destroying the layer.  If you want to
+//!     avoid this cost during `drop()`, call `.stop()` manually before the
+//!     layer is dropped.
+//!   * `background_flush_timeout`: In the case of [`NativeLayer`], a background
+//!     thread is used to fetch data from the SDK into the Rust world.  This
+//!     controls how long we wait for each flush to complete; however, if it
+//!     doesn't complete in time, another attempt will soon be made.
+//!   * `background_poll_timeout`: How long to wait for new data to arrive
+//!     during each attempt of the background thread.
+//!   * `background_poll_interval`: How long to wait between attempts to poll
+//!     for new data in the background thread.
 
 // Internal modules:
 mod debug_annotations;
