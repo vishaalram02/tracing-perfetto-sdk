@@ -56,7 +56,7 @@
 //!   - size_kb: 1024
 //! data_sources:
 //!   - config:
-//!     name: "rust_tracing"
+//!       name: "rust_tracing"
 //! ```
 //!
 //! This is a good starting point for a minimal config file.  If you want to
